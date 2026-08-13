@@ -132,7 +132,7 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
-    .setName("top-XP")
+    .setName("top-xp")
     .setDescription("shows the top 10 members in XP"),
 
   new SlashCommandBuilder()
