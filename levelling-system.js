@@ -132,11 +132,11 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
-    .setName("top-xp")
-    .setDescription("Show the top 10 members by XP"),
+    .setName("top xp")
+    .setDescription("shows the top 10 members in XP"),
 
   new SlashCommandBuilder()
-    .setName("announcement")
+    .setName("xp annc")
     .setDescription("Configure daily or weekly XP announcements")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .addStringOption((option) =>
@@ -153,7 +153,7 @@ const commands = [
     .addChannelOption((option) =>
       option
         .setName("channel")
-        .setDescription("Channel where the announcement will be sent")
+        .setDescription("Channel where the annc will be sent")
         .setRequired(false)
     ),
 ].map((command) => command.toJSON());
@@ -254,8 +254,8 @@ client.on(Events.MessageCreate, async (message) => {
     const neededXP = nextLevelXP - currentLevelXP;
 
     const embed = new EmbedBuilder()
-      .setColor(0x00d4ff)
-      .setTitle("🎉 Level Up!")
+      .setColor(81c1eb)
+      .setTitle("you have levelled up! keep it up for a cookei🍪!")
       .setDescription(
         `${message.author} reached **Level ${user.level}**!`
       )
