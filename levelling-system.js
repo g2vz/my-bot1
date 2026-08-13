@@ -231,9 +231,18 @@ client.on(Events.MessageCreate, async (message) => {
     by sending huge amounts of spaces.
   */
 
-  const characters = message.content.replace(/\s/g, "").length;
+const words = message.content.trim().split(/\s+/).filter(Boolean);
+let earnedXP = words.length * (Math.floor(Math.random() * 10) + 1);
 
-  const earnedXP = characters * 0.5;
+// 13% فرصة XP إضافي بين 11 و99
+if (Math.random() < 0.13) {
+    earnedXP = words.length * (Math.floor(Math.random() * 89) + 11);
+}
+
+// 5% فرصة تخطي إلى المستوى التالي
+if (Math.random() < 0.05) {
+    user.level += 1;
+}
 
   user.xp += earnedXP;
   user.messages += 1;
