@@ -132,11 +132,11 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
-    .setName("top xp")
+    .setName("top-XP")
     .setDescription("shows the top 10 members in XP"),
 
   new SlashCommandBuilder()
-    .setName("xp annc")
+    .setName("xp-annc")
     .setDescription("Configure daily or weekly XP announcements")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .addStringOption((option) =>
@@ -254,7 +254,7 @@ client.on(Events.MessageCreate, async (message) => {
     const neededXP = nextLevelXP - currentLevelXP;
 
     const embed = new EmbedBuilder()
-      .setColor(81c1eb)
+      .setColor(0x81c1eb)
       .setTitle("you have levelled up! keep it up for a cookei🍪!")
       .setDescription(
         `${message.author} reached **Level ${user.level}**!`
