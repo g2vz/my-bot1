@@ -1,0 +1,12 @@
+{
+  "name": "my-bot1",
+  "version": "1.0.0",
+  "description": "Discord levelling bot",
+  "main": "levelling-system.js",
+  "scripts": {
+    "start": "node levelling-system.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.21.0"
+  }
+}
