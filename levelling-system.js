@@ -7,6 +7,9 @@ const {
   SlashCommandBuilder,
   PermissionFlagsBits,
   EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } = require("discord.js");
 
 const fs = require("node:fs");
@@ -295,42 +298,88 @@ if (Math.random() < 0.05) {
 function getTopXP(guildId) {
   return Object.entries(levels[guildId] || {})
     .sort((a, b) => b[1].xp - a[1].xp)
-    .slice(0, 10);
+    .slice(0, 100);
 }
 
-/* =========================
-   ANNOUNCEMENTS
-========================= */
-
-function buildAnnouncement(guildId, type) {
+async function buildAnnouncement(guildId, type, page = 0) {
   const top = getTopXP(guildId);
 
-  if (!top.length) {
-    return "No XP data yet.";
-  }
+  const start = page * 10;
+  const pageUsers = top.slice(start, start + 10);
+  const totalPages = Math.max(1, Math.ceil(top.length / 10));
 
   const title =
     type === "daily"
-      ? "📅 Daily XP Leaderboard"
-      : "🗓️ Weekly XP Leaderboard";
+      ? "daily announcement"
+      : "weekly announcement";
 
-  const medals = ["🥇", "🥈", "🥉"];
+  const rows = [];
 
-  const rows = top.map(([userId, user], index) => {
-    const position =
-      medals[index] || `**#${index + 1}**`;
+  for (let i = 0; i < pageUsers.length; i++) {
+    const [userId, user] = pageUsers[i];
 
-    return (
-      `${position} <@${userId}>` +
-      ` • Level **${user.level}**` +
-      ` • **${user.xp.toFixed(2)} XP**`
+    const member = await client.guilds.cache
+      .get(guildId)
+      ?.members.fetch(userId)
+      .catch(() => null);
+
+    const name =
+      member?.displayName ||
+      member?.user?.username ||
+      `User ${userId}`;
+
+    rows.push(
+      `**#${start + i + 1}** ${name} • Level **${user.level}** • **${user.xp.toFixed(2)} XP**`
     );
-  });
+  }
 
-  return `**${title}**\n\n${rows.join("\n")}`;
+  const embed = new EmbedBuilder()
+    .setColor(0x00d4ff)
+    .setTitle(title)
+    .setDescription(
+      `**Top 100 members with most XP**\n\n` +
+      (rows.length ? rows.join("\n") : "No XP data yet.")
+    )
+    .setFooter({
+      text: `Page ${page + 1}/${totalPages}`,
+    });
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`xp_prev_${guildId}_${type}`)
+      .setLabel("Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page === 0),
+
+    new ButtonBuilder()
+      .setCustomId(`xp_next_${guildId}_${type}`)
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(page >= totalPages - 1)
+  );
+
+  return {
+    embeds: [embed],
+    components: [row],
+  };
 }
 
 async function sendAnnouncement(type) {
+  for (const [guildId, config] of Object.entries(announcements)) {
+    if (config.type !== type) continue;
+    if (!config.channelId) continue;
+
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) continue;
+
+    const channel = guild.channels.cache.get(config.channelId);
+    if (!channel || !channel.isTextBased()) continue;
+
+    const message = await buildAnnouncement(guildId, type, 0);
+
+    await channel.send(message).catch(() => {});
+  }
+}
   for (const [guildId, config] of Object.entries(announcements)) {
     if (config.type !== type) continue;
     if (!config.channelId) continue;
@@ -397,7 +446,47 @@ setInterval(async () => {
 ========================= */
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  client.on(Events.InteractionCreate, async (interaction) => {
+
+  if (interaction.isButton()) {
+    // Button code goes here
+  }
+
   if (!interaction.isChatInputCommand()) return;
+  if (!interaction.guild) return;
+  if (!interaction.isChatInputCommand()) return;
+    if (interaction.isButton()) {
+    const parts = interaction.customId.split("_");
+
+    if (parts[0] !== "xp") return;
+
+    const direction = parts[1];
+    const guildIdFromButton = parts[2];
+    const type = parts[3];
+
+    if (guildIdFromButton !== guildId) return;
+
+    const currentPage =
+      interaction.message.embeds[0]?.footer?.text
+        ?.match(/Page (\d+)\/(\d+)/);
+
+    const page = currentPage
+      ? Number(currentPage[1]) - 1
+      : 0;
+
+    const newPage =
+      direction === "next"
+        ? page + 1
+        : Math.max(0, page - 1);
+
+    const updated = await buildAnnouncement(
+      guildId,
+      type,
+      newPage
+    );
+
+    await interaction.update(updated);
+  }
   if (!interaction.guild) return;
 
   const guildId = interaction.guild.id;
@@ -528,7 +617,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
      /ANNOUNCEMENT
   ========================= */
 
-  if (interaction.commandName === "announcement") {
+  if (interaction.commandName === "xp-annc") {
     const type =
       interaction.options.getString(
         "type",
