@@ -5448,5 +5448,5 @@ setInterval(
 /* =========================================================
    LOGIN
 ========================================================= */
-
+commandList.push(...gamesSystem.commands);
 client.login(TOKEN);
