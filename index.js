@@ -1,2 +1,2 @@
-require("./levelling-system");
-require("./games-system");
+const levelSystem = require("./levelling-system.js");
+const gamesSystem = require("./games-system.js");
