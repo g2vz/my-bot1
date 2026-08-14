@@ -2486,7 +2486,7 @@ const client =
       GatewayIntentBits.GuildVoiceStates,
     ],
   });
-
+const gamesSystem = require("./games-system.js");
 /* =========================================================
    REGISTER COMMANDS
 ========================================================= */
