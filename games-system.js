@@ -638,7 +638,7 @@ const adminCommands = [
     ),
 
   new SlashCommandBuilder()
-    .setName("hideNseek")
+    .setName("hidenseek")
     .setDescription(
       "Start a Hide and Seek game"
     ),
