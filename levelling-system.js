@@ -29,9 +29,6 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 
-const AFK_VOICE_CHANNEL_ID =
-  process.env.AFK_VOICE_CHANNEL_ID || "";
-
 if (!TOKEN || !CLIENT_ID) {
   console.error("Missing DISCORD_TOKEN or CLIENT_ID.");
   process.exit(1);
@@ -41,8 +38,8 @@ if (!TOKEN || !CLIENT_ID) {
    SETTINGS
 ========================================================= */
 
-const SPAM_MESSAGE_LIMIT = 5;
-const SPAM_WINDOW_MS = 3000;
+const SPAM_MESSAGE_LIMIT = 3;
+const SPAM_WINDOW_MS = 5000;
 
 const FIRST_SPAM_TIMEOUT_MS = 5 * 60 * 1000;
 const SECOND_SPAM_TIMEOUT_MS = 20 * 60 * 1000;
@@ -140,29 +137,184 @@ function saveAll() {
 function getGuildSettings(guildId) {
   if (!settings[guildId]) {
     settings[guildId] = {
+      /*
+        XP system:
+
+        xpEnabled = global default
+
+        xpChannelStates:
+        {
+          "channelId": true,
+          "channelId": false
+        }
+
+        A channel-specific setting overrides
+        the global setting.
+      */
+
+      xpEnabled: false,
+      xpChannelStates: {},
+
+      /*
+        Anti-spam system:
+
+        spamEnabled = global default
+
+        spamChannelStates:
+        {
+          "channelId": true,
+          "channelId": false
+        }
+
+        A channel-specific setting overrides
+        the global setting.
+      */
+
       spamEnabled: true,
-      spamExemptChannelId: null,
-      xpExemptChannelId: null,
+      spamChannelStates: {},
+
       levelChannelId: null,
-      afkVoiceChannelId: null,
+
+      /*
+        Kept for compatibility with the previous
+        configuration structure.
+      */
+
+      xpExemptChannelId: null,
+      spamExemptChannelId: null,
+
+      /*
+        AFK channel is stored only as information.
+
+        The bot DOES NOT automatically reconnect
+        after being disconnected/kicked.
+      */
+
+      vafkChannelId: null,
     };
   }
 
   /*
-    Keep compatibility with existing settings files
-    that were created before /vafk was added.
+    Compatibility for older settings.json files.
   */
 
   if (
-    !Object.prototype.hasOwnProperty.call(
-      settings[guildId],
-      "afkVoiceChannelId"
-    )
+    typeof settings[guildId].xpEnabled !==
+    "boolean"
   ) {
-    settings[guildId].afkVoiceChannelId = null;
+    settings[guildId].xpEnabled = false;
+  }
+
+  if (
+    !settings[guildId].xpChannelStates ||
+    typeof settings[guildId].xpChannelStates !==
+      "object"
+  ) {
+    settings[guildId].xpChannelStates = {};
+  }
+
+  if (
+    typeof settings[guildId].spamEnabled !==
+    "boolean"
+  ) {
+    settings[guildId].spamEnabled = true;
+  }
+
+  if (
+    !settings[guildId].spamChannelStates ||
+    typeof settings[guildId].spamChannelStates !==
+      "object"
+  ) {
+    settings[guildId].spamChannelStates = {};
+  }
+
+  if (
+    !("levelChannelId" in settings[guildId])
+  ) {
+    settings[guildId].levelChannelId = null;
+  }
+
+  if (
+    !("xpExemptChannelId" in settings[guildId])
+  ) {
+    settings[guildId].xpExemptChannelId = null;
+  }
+
+  if (
+    !("spamExemptChannelId" in settings[guildId])
+  ) {
+    settings[guildId].spamExemptChannelId = null;
+  }
+
+  if (
+    !("vafkChannelId" in settings[guildId])
+  ) {
+    settings[guildId].vafkChannelId = null;
   }
 
   return settings[guildId];
+}
+
+/* =========================================================
+   XP STATUS
+========================================================= */
+
+function isXPEnabled(
+  guildId,
+  channelId
+) {
+  const guildSettings =
+    getGuildSettings(guildId);
+
+  /*
+    Channel-specific setting has priority.
+  */
+
+  if (
+    Object.prototype.hasOwnProperty.call(
+      guildSettings.xpChannelStates,
+      channelId
+    )
+  ) {
+    return (
+      guildSettings.xpChannelStates[
+        channelId
+      ] === true
+    );
+  }
+
+  return guildSettings.xpEnabled === true;
+}
+
+/* =========================================================
+   ANTI-SPAM STATUS
+========================================================= */
+
+function isAntiSpamEnabled(
+  guildId,
+  channelId
+) {
+  const guildSettings =
+    getGuildSettings(guildId);
+
+  /*
+    Channel-specific setting has priority.
+  */
+
+  if (
+    Object.prototype.hasOwnProperty.call(
+      guildSettings.spamChannelStates,
+      channelId
+    )
+  ) {
+    return (
+      guildSettings.spamChannelStates[
+        channelId
+      ] === true
+    );
+  }
+
+  return guildSettings.spamEnabled === true;
 }
 
 /* =========================================================
@@ -390,7 +542,8 @@ function isSpamLocked(key) {
 
 function registerSpamMessage(
   guildId,
-  userId
+  userId,
+  message
 ) {
   const key =
     getSpamKey(
@@ -400,24 +553,55 @@ function registerSpamMessage(
 
   const now = Date.now();
 
-  let timestamps =
+  let messages =
     spamTracker.get(key) || [];
 
-  timestamps =
-    timestamps.filter(
-      (timestamp) =>
-        now - timestamp <=
+  messages =
+    messages.filter(
+      (entry) =>
+        now - entry.timestamp <=
         SPAM_WINDOW_MS
     );
 
-  timestamps.push(now);
+  messages.push({
+    timestamp: now,
+    message,
+  });
 
   spamTracker.set(
     key,
-    timestamps
+    messages
   );
 
-  return timestamps.length;
+  return messages;
+}
+
+/* =========================================================
+   DELETE SPAM MESSAGES
+========================================================= */
+
+async function deleteSpamMessages(
+  entries
+) {
+  if (!entries.length) {
+    return;
+  }
+
+  await Promise.all(
+    entries.map(
+      async (entry) => {
+        if (!entry.message) {
+          return;
+        }
+
+        await entry.message
+          .delete()
+          .catch(
+            () => {}
+          );
+      }
+    )
+  );
 }
 
 /* =========================================================
@@ -433,14 +617,28 @@ async function handleSpam(message) {
     return false;
   }
 
+  /*
+    Anti-spam is checked per channel.
+  */
+
+  if (
+    !isAntiSpamEnabled(
+      message.guild.id,
+      message.channel.id
+    )
+  ) {
+    return false;
+  }
+
+  /*
+    Compatibility with the previous
+    spam exemption setting.
+  */
+
   const guildSettings =
     getGuildSettings(
       message.guild.id
     );
-
-  if (!guildSettings.spamEnabled) {
-    return false;
-  }
 
   if (
     guildSettings.spamExemptChannelId ===
@@ -467,14 +665,24 @@ async function handleSpam(message) {
       message.author.id
     );
 
-  const count =
+  const entries =
     registerSpamMessage(
       message.guild.id,
-      message.author.id
+      message.author.id,
+      message
     );
 
+  /*
+    More than 3 messages
+    within 5 seconds.
+
+    3 messages = allowed.
+    4th message = spam action.
+  */
+
   if (
-    count <= SPAM_MESSAGE_LIMIT
+    entries.length <=
+    SPAM_MESSAGE_LIMIT
   ) {
     return false;
   }
@@ -488,6 +696,14 @@ async function handleSpam(message) {
     Date.now() +
       SPAM_ACTION_DELAY_MS
   );
+
+  /*
+    Keep all messages currently inside
+    the spam window so they can be deleted.
+  */
+
+  const messagesToDelete =
+    [...entries];
 
   clearSpamTracker(key);
 
@@ -522,12 +738,27 @@ async function handleSpam(message) {
     30 * 60 * 1000
   );
 
+  /*
+    Small delay before taking action,
+    kept from the previous system.
+  */
+
   await new Promise(
     (resolve) =>
       setTimeout(
         resolve,
         SPAM_ACTION_DELAY_MS
       )
+  );
+
+  /*
+    Delete the messages that were part
+    of the spam burst, including the
+    earlier messages in the same window.
+  */
+
+  await deleteSpamMessages(
+    messagesToDelete
   );
 
   const member =
@@ -634,7 +865,18 @@ const commands = [
     ),
 
   /* =========================
+     /top
+  ========================= */
+
+  new SlashCommandBuilder()
+    .setName("top")
+    .setDescription(
+      "Show the top 100 members by XP"
+    ),
+
+  /* =========================
      /top-xp
+     Backwards compatibility
   ========================= */
 
   new SlashCommandBuilder()
@@ -693,13 +935,83 @@ const commands = [
     ),
 
   /* =========================
-     /spam
+     /vafk
   ========================= */
 
   new SlashCommandBuilder()
-    .setName("spam")
+    .setName("vafk")
     .setDescription(
-      "Enable or disable anti-spam protection"
+      "Join a voice channel and stay AFK until disconnected"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    )
+    .addChannelOption(
+      (option) =>
+        option
+          .setName("channel")
+          .setDescription(
+            "Voice channel for the bot to stay AFK in"
+          )
+          .setRequired(true)
+          .addChannelTypes(
+            ChannelType.GuildVoice
+          )
+    ),
+
+  /* =========================
+     /xp-statue
+  ========================= */
+
+  new SlashCommandBuilder()
+    .setName("xp-statue")
+    .setDescription(
+      "Turn XP system on or off globally or for a specific channel"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    )
+    .addStringOption(
+      (option) =>
+        option
+          .setName("mode")
+          .setDescription(
+            "Turn XP on or off"
+          )
+          .setRequired(true)
+          .addChoices(
+            {
+              name: "On",
+              value: "on",
+            },
+            {
+              name: "Off",
+              value: "off",
+            }
+          )
+    )
+    .addChannelOption(
+      (option) =>
+        option
+          .setName("channel")
+          .setDescription(
+            "Optional channel to change XP status only there"
+          )
+          .setRequired(false)
+          .addChannelTypes(
+            ChannelType.GuildText,
+            ChannelType.GuildAnnouncement
+          )
+    ),
+
+  /* =========================
+     /antispam-statue
+  ========================= */
+
+  new SlashCommandBuilder()
+    .setName("antispam-statue")
+    .setDescription(
+      "Turn anti-spam on or off globally or for a specific channel"
     )
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
@@ -722,45 +1034,13 @@ const commands = [
               value: "off",
             }
           )
-    ),
-
-  /* =========================
-     /spam-exempt
-  ========================= */
-
-  new SlashCommandBuilder()
-    .setName("spam-exempt")
-    .setDescription(
-      "Set a channel where anti-spam timeouts are disabled"
-    )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addStringOption(
-      (option) =>
-        option
-          .setName("mode")
-          .setDescription(
-            "Enable or disable exempt channel"
-          )
-          .setRequired(true)
-          .addChoices(
-            {
-              name: "Set",
-              value: "set",
-            },
-            {
-              name: "Off",
-              value: "off",
-            }
-          )
     )
     .addChannelOption(
       (option) =>
         option
           .setName("channel")
           .setDescription(
-            "Channel to exempt from spam timeouts"
+            "Optional channel to change anti-spam status only there"
           )
           .setRequired(false)
           .addChannelTypes(
@@ -771,6 +1051,7 @@ const commands = [
 
   /* =========================
      /xp-exempt
+     Previous command kept
   ========================= */
 
   new SlashCommandBuilder()
@@ -858,31 +1139,6 @@ const commands = [
             ChannelType.GuildAnnouncement
           )
     ),
-
-  /* =========================
-     /vafk
-  ========================= */
-
-  new SlashCommandBuilder()
-    .setName("vafk")
-    .setDescription(
-      "Make the bot join a voice channel and stay AFK there"
-    )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addChannelOption(
-      (option) =>
-        option
-          .setName("channel")
-          .setDescription(
-            "Voice channel where the bot should stay AFK"
-          )
-          .setRequired(true)
-          .addChannelTypes(
-            ChannelType.GuildVoice
-          )
-    ),
 ].map(
   (command) =>
     command.toJSON()
@@ -944,229 +1200,88 @@ async function registerCommands() {
 }
 
 /* =========================================================
-   AFK VOICE 24/7
+   VAFK
 ========================================================= */
 
-async function joinAFKVoice(
-  requestedChannelId = null,
-  saveSetting = false
+/*
+  Important:
+
+  /vafk is manual only.
+
+  The bot joins when /vafk is used.
+
+  If the bot is:
+  - kicked from the voice channel
+  - disconnected
+  - moved/disconnected by Discord
+  - voice channel is deleted
+
+  it DOES NOT automatically join again.
+
+  The admin must use /vafk again.
+*/
+
+async function joinVAFKVoice(
+  interaction,
+  channel
 ) {
-  let channelId =
-    requestedChannelId;
-
-  /*
-    If /vafk did not provide a channel,
-    use the saved guild setting first.
-
-    The old AFK_VOICE_CHANNEL_ID environment
-    variable remains as a fallback for compatibility.
-  */
-
-  if (!channelId) {
-    for (
-      const guild of client.guilds.cache.values()
-    ) {
-      const guildSettings =
-        getGuildSettings(
-          guild.id
-        );
-
-      const savedChannelId =
-        guildSettings.afkVoiceChannelId ||
-        AFK_VOICE_CHANNEL_ID;
-
-      if (!savedChannelId) {
-        continue;
-      }
-
-      await joinAFKVoiceForGuild(
-        guild,
-        savedChannelId,
-        false
+  if (!channel) {
+    await interaction
+      .reply({
+        content:
+          "Please select a voice channel.",
+        ephemeral: true,
+      })
+      .catch(
+        () => {}
       );
-    }
 
     return;
   }
 
-  /*
-    Find the guild containing the selected
-    voice channel.
-  */
-
-  const channel =
-    client.channels.cache.get(
-      channelId
-    );
-
-  if (!channel) {
-    console.error(
-      "AFK voice channel was not found."
-    );
-
-    return false;
-  }
-
   if (
     channel.type !==
     ChannelType.GuildVoice
   ) {
-    console.error(
-      "AFK voice channel is not a voice channel."
-    );
-
-    return false;
-  }
-
-  const result =
-    await joinAFKVoiceForGuild(
-      channel.guild,
-      channel.id,
-      saveSetting
-    );
-
-  return result;
-}
-
-/* =========================================================
-   JOIN AFK VOICE FOR GUILD
-========================================================= */
-
-async function joinAFKVoiceForGuild(
-  guild,
-  channelId,
-  saveSetting = false
-) {
-  const channel =
-    guild.channels.cache.get(
-      channelId
-    );
-
-  if (!channel) {
-    console.error(
-      `AFK voice channel ${channelId} was not found in ${guild.name}.`
-    );
-
-    /*
-      If the saved channel was deleted,
-      remove the invalid saved setting.
-    */
-
-    const guildSettings =
-      getGuildSettings(
-        guild.id
+    await interaction
+      .reply({
+        content:
+          "Please select a normal voice channel.",
+        ephemeral: true,
+      })
+      .catch(
+        () => {}
       );
 
-    if (
-      guildSettings.afkVoiceChannelId ===
-      channelId
-    ) {
-      guildSettings.afkVoiceChannelId =
-        null;
-
-      saveAll();
-    }
-
-    return false;
+    return;
   }
 
-  if (
-    channel.type !==
-    ChannelType.GuildVoice
-  ) {
-    console.error(
-      "AFK_VOICE_CHANNEL_ID is not a voice channel."
+  const guild =
+    interaction.guild;
+
+  const existing =
+    getVoiceConnection(
+      guild.id
     );
-
-    return false;
-  }
-
-  const botMember =
-    guild.members.me;
-
-  if (!botMember) {
-    console.error(
-      `Bot member was not found in ${guild.name}.`
-    );
-
-    return false;
-  }
 
   /*
-    The bot needs Connect permission to enter
-    and Speak is not required because the bot
-    is self-muted.
+    If already connected to a voice channel,
+    destroy the old connection first so
+    /vafk can be used to manually move it.
   */
 
-  const permissions =
-    channel.permissionsFor(
-      botMember
-    );
-
-  if (
-    !permissions ||
-    !permissions.has(
-      PermissionFlagsBits.Connect
-    )
-  ) {
-    console.error(
-      `Bot does not have Connect permission in ${channel.name}.`
-    );
-
-    return false;
+  if (existing) {
+    try {
+      existing.destroy();
+    } catch (error) {
+      console.error(
+        "Failed to destroy previous voice connection:",
+        error
+      );
+    }
   }
 
   try {
-    const existing =
-      getVoiceConnection(
-        guild.id
-      );
-
-    /*
-      If already connected to this exact channel,
-      keep the current connection alive.
-    */
-
-    if (existing) {
-      const currentChannelId =
-        existing.joinConfig
-          ?.channelId;
-
-      if (
-        currentChannelId ===
-        channel.id
-      ) {
-        if (saveSetting) {
-          const guildSettings =
-            getGuildSettings(
-              guild.id
-            );
-
-          guildSettings.afkVoiceChannelId =
-            channel.id;
-
-          saveAll();
-        }
-
-        return true;
-      }
-
-      /*
-        /vafk selected another voice channel.
-        Move the bot by destroying the old
-        connection first.
-      */
-
-      try {
-        existing.destroy();
-      } catch (error) {
-        console.error(
-          "Failed to destroy previous AFK voice connection:",
-          error
-        );
-      }
-    }
-
     const connection =
       joinVoiceChannel({
         channelId: channel.id,
@@ -1177,11 +1292,17 @@ async function joinAFKVoiceForGuild(
         selfMute: true,
       });
 
+    /*
+      Only listen for errors.
+
+      DO NOT reconnect automatically.
+    */
+
     connection.on(
       "error",
       (error) => {
         console.error(
-          "AFK voice connection error:",
+          "VAFK voice connection error:",
           error
         );
       }
@@ -1194,40 +1315,45 @@ async function joinAFKVoiceForGuild(
         newState
       ) => {
         console.log(
-          `AFK voice state in ${guild.name}: ${oldState.status} -> ${newState.status}`
+          `VAFK voice state: ${oldState.status} -> ${newState.status}`
         );
       }
     );
 
-    /*
-      Save the selected voice channel so the
-      bot knows where to return after restart.
-    */
+    const guildSettings =
+      getGuildSettings(
+        guild.id
+      );
 
-    if (saveSetting) {
-      const guildSettings =
-        getGuildSettings(
-          guild.id
-        );
+    guildSettings.vafkChannelId =
+      channel.id;
 
-      guildSettings.afkVoiceChannelId =
-        channel.id;
+    saveAll();
 
-      saveAll();
-    }
-
-    console.log(
-      `Joined AFK voice channel: ${channel.name} in ${guild.name}`
-    );
-
-    return true;
+    await interaction
+      .reply({
+        content:
+          `I joined ${channel} and will stay AFK there until I am disconnected or the channel is deleted.`,
+        ephemeral: true,
+      })
+      .catch(
+        () => {}
+      );
   } catch (error) {
     console.error(
-      "Failed to join AFK voice:",
+      "Failed to join VAFK voice:",
       error
     );
 
-    return false;
+    await interaction
+      .reply({
+        content:
+          "I couldn't join that voice channel.",
+        ephemeral: true,
+      })
+      .catch(
+        () => {}
+      );
   }
 }
 
@@ -1252,14 +1378,13 @@ client.once(
     }
 
     /*
-      Restore saved /vafk voice channels after
-      the bot starts again.
+      IMPORTANT:
 
-      The old AFK_VOICE_CHANNEL_ID environment
-      variable is still supported as fallback.
+      No automatic VAFK join here.
+
+      The bot only joins when /vafk
+      is manually used by an admin.
     */
-
-    await joinAFKVoice();
   }
 );
 
@@ -1303,7 +1428,26 @@ client.on(
       );
 
     /* =====================================================
-       XP EXEMPT CHANNEL
+       XP STATUS
+    ===================================================== */
+
+    /*
+      XP is completely disabled unless
+      the global or channel-specific status
+      says it is enabled.
+    */
+
+    if (
+      !isXPEnabled(
+        message.guild.id,
+        message.channel.id
+      )
+    ) {
+      return;
+    }
+
+    /* =====================================================
+       OLD XP EXEMPT COMPATIBILITY
     ===================================================== */
 
     if (
@@ -1338,8 +1482,6 @@ client.on(
       );
 
     /*
-      IMPORTANT:
-
       We save the old level BEFORE giving XP.
 
       This is what makes the level-up message
@@ -1394,13 +1536,6 @@ client.on(
         user.xp
       );
 
-    /*
-      Update the stored level.
-
-      The level-up message below is triggered
-      ONLY if newLevel > oldLevel.
-    */
-
     user.level =
       newLevel;
 
@@ -1414,48 +1549,14 @@ client.on(
        LEVEL UP
     ===================================================== */
 
-    /*
-      THIS IS THE IMPORTANT PART.
-
-      The message can ONLY happen when:
-
-      oldLevel = 0
-      newLevel = 1
-
-      or:
-
-      oldLevel = 1
-      newLevel = 2
-
-      or:
-
-      oldLevel = 2
-      newLevel = 3
-
-      etc.
-
-      If the user sends 100 messages while staying
-      at the same level, NOTHING is sent.
-    */
-
     if (
       newLevel <= oldLevel
     ) {
       return;
     }
 
-    /*
-      A level was actually gained.
-      Send ONE message only.
-    */
-
     const levelChannelId =
       guildSettings.levelChannelId;
-
-    /*
-      If no level channel has been configured,
-      do not send the level message anywhere.
-    */
 
     if (!levelChannelId) {
       return;
@@ -1533,17 +1634,6 @@ client.on(
               `${currentXP.toFixed(2)} / ${neededXP.toFixed(2)} XP`,
           }
         );
-
-    /*
-      ONE SEND ONLY.
-
-      No timer.
-      No interval.
-      No message counter.
-      No repeated level announcement.
-
-      It only runs after newLevel > oldLevel.
-    */
 
     await levelChannel
       .send({
@@ -1725,6 +1815,34 @@ async function sendAnnouncement(type) {
 
     if (
       !config.channelId
+    ) {
+      continue;
+    }
+
+    /*
+      Do not send XP announcements if
+      XP is completely disabled globally
+      and there are no channel-specific
+      XP-enabled channels.
+    */
+
+    const guildSettings =
+      getGuildSettings(
+        guildId
+      );
+
+    const hasChannelXP =
+      Object.values(
+        guildSettings.xpChannelStates ||
+          {}
+      ).some(
+        (value) =>
+          value === true
+      );
+
+    if (
+      guildSettings.xpEnabled !== true &&
+      !hasChannelXP
     ) {
       continue;
     }
@@ -2096,12 +2214,15 @@ client.on(
     }
 
     /* =====================================================
+       /TOP
        /TOP-XP
     ===================================================== */
 
     if (
       interaction.commandName ===
-      "top-xp"
+        "top" ||
+      interaction.commandName ===
+        "top-xp"
     ) {
       const announcement =
         await buildAnnouncement(
@@ -2127,6 +2248,24 @@ client.on(
       interaction.commandName ===
       "xp-annc"
     ) {
+      if (
+        !isModerator(
+          interaction.member
+        )
+      ) {
+        await interaction
+          .reply({
+            content:
+              "You do not have permission to use this command.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
+
+        return;
+      }
+
       const type =
         interaction.options.getString(
           "type",
@@ -2201,30 +2340,260 @@ client.on(
     }
 
     /* =====================================================
-       /SPAM
+       /VAFK
     ===================================================== */
 
     if (
       interaction.commandName ===
-      "spam"
+      "vafk"
     ) {
+      if (
+        !isModerator(
+          interaction.member
+        )
+      ) {
+        await interaction
+          .reply({
+            content:
+              "You do not have permission to use this command.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
+
+        return;
+      }
+
+      const channel =
+        interaction.options.getChannel(
+          "channel",
+          true
+        );
+
+      await joinVAFKVoice(
+        interaction,
+        channel
+      );
+
+      return;
+    }
+
+    /* =====================================================
+       /XP-STATUE
+    ===================================================== */
+
+    if (
+      interaction.commandName ===
+      "xp-statue"
+    ) {
+      if (
+        !isModerator(
+          interaction.member
+        )
+      ) {
+        await interaction
+          .reply({
+            content:
+              "You do not have permission to use this command.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
+
+        return;
+      }
+
       const mode =
         interaction.options.getString(
           "mode",
           true
         );
 
-      guildSettings.spamEnabled =
+      const channel =
+        interaction.options.getChannel(
+          "channel"
+        );
+
+      /*
+        No channel:
+        change the entire server XP system.
+      */
+
+      if (!channel) {
+        guildSettings.xpEnabled =
+          mode === "on";
+
+        /*
+          Clear old channel overrides so
+          global status is truly global.
+        */
+
+        guildSettings.xpChannelStates = {};
+
+        saveAll();
+
+        await interaction
+          .reply({
+            content:
+              guildSettings.xpEnabled
+                ? "XP system is now ON for the entire server."
+                : "XP system is now OFF for the entire server.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
+
+        return;
+      }
+
+      /*
+        Channel selected:
+        change XP status only in that channel.
+
+        This does NOT change the global setting.
+      */
+
+      guildSettings.xpChannelStates[
+        channel.id
+      ] =
+        mode === "on";
+
+      saveAll();
+
+      await interaction
+        .reply({
+          content:
+            mode === "on"
+              ? `XP is now ON in ${channel}.`
+              : `XP is now OFF in ${channel}.`,
+          ephemeral: true,
+        })
+        .catch(
+          () => {}
+        );
+
+      return;
+    }
+
+    /* =====================================================
+       /ANTISPAM-STATUE
+    ===================================================== */
+
+    if (
+      interaction.commandName ===
+      "antispam-statue"
+    ) {
+      if (
+        !isModerator(
+          interaction.member
+        )
+      ) {
+        await interaction
+          .reply({
+            content:
+              "You do not have permission to use this command.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
+
+        return;
+      }
+
+      const mode =
+        interaction.options.getString(
+          "mode",
+          true
+        );
+
+      const channel =
+        interaction.options.getChannel(
+          "channel"
+        );
+
+      /*
+        No channel:
+        change Anti-Spam globally.
+      */
+
+      if (!channel) {
+        guildSettings.spamEnabled =
+          mode === "on";
+
+        /*
+          Clear channel overrides so the
+          global setting applies everywhere.
+        */
+
+        guildSettings.spamChannelStates =
+          {};
+
+        /*
+          Clear existing trackers when
+          Anti-Spam is globally turned off.
+        */
+
+        if (
+          guildSettings.spamEnabled ===
+          false
+        ) {
+          for (
+            const key of spamTracker.keys()
+          ) {
+            if (
+              key.startsWith(
+                `${guildId}:`
+              )
+            ) {
+              spamTracker.delete(
+                key
+              );
+            }
+          }
+        }
+
+        saveAll();
+
+        await interaction
+          .reply({
+            content:
+              guildSettings.spamEnabled
+                ? "Anti-spam is now ON for the entire server."
+                : "Anti-spam is now OFF for the entire server.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
+
+        return;
+      }
+
+      /*
+        Channel selected:
+        change Anti-Spam only in that channel.
+
+        Global setting remains unchanged.
+      */
+
+      guildSettings.spamChannelStates[
+        channel.id
+      ] =
         mode === "on";
 
       /*
-        Clear existing spam tracking when
-        anti-spam is switched off.
+        If channel Anti-Spam is turned off,
+        clear trackers for members in that
+        guild so old messages cannot trigger
+        a timeout later.
       */
 
       if (
-        guildSettings.spamEnabled ===
-        false
+        mode === "off"
       ) {
         for (
           const key of spamTracker.keys()
@@ -2246,84 +2615,9 @@ client.on(
       await interaction
         .reply({
           content:
-            guildSettings.spamEnabled
-              ? "Anti-spam is now enabled."
-              : "Anti-spam is now disabled.",
-          ephemeral: true,
-        })
-        .catch(
-          () => {}
-        );
-
-      return;
-    }
-
-    /* =====================================================
-       /SPAM-EXEMPT
-    ===================================================== */
-
-    if (
-      interaction.commandName ===
-      "spam-exempt"
-    ) {
-      const mode =
-        interaction.options.getString(
-          "mode",
-          true
-        );
-
-      const channel =
-        interaction.options.getChannel(
-          "channel"
-        );
-
-      if (
-        mode === "off"
-      ) {
-        guildSettings.spamExemptChannelId =
-          null;
-
-        saveAll();
-
-        await interaction
-          .reply({
-            content:
-              "Spam channel exemption has been disabled.",
-            ephemeral: true,
-          })
-          .catch(
-            () => {}
-          );
-
-        return;
-      }
-
-      if (
-        !channel ||
-        !channel.isTextBased()
-      ) {
-        await interaction
-          .reply({
-            content:
-              "Please select a text channel.",
-            ephemeral: true,
-          })
-          .catch(
-            () => {}
-          );
-
-        return;
-      }
-
-      guildSettings.spamExemptChannelId =
-        channel.id;
-
-      saveAll();
-
-      await interaction
-        .reply({
-          content:
-            `Anti-spam timeout protection is now disabled in ${channel}.`,
+            mode === "on"
+              ? `Anti-spam is now ON in ${channel}.`
+              : `Anti-spam is now OFF in ${channel}.`,
           ephemeral: true,
         })
         .catch(
@@ -2335,12 +2629,31 @@ client.on(
 
     /* =====================================================
        /XP-EXEMPT
+       Previous command kept
     ===================================================== */
 
     if (
       interaction.commandName ===
       "xp-exempt"
     ) {
+      if (
+        !isModerator(
+          interaction.member
+        )
+      ) {
+        await interaction
+          .reply({
+            content:
+              "You do not have permission to use this command.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
+
+        return;
+      }
+
       const mode =
         interaction.options.getString(
           "mode",
@@ -2416,6 +2729,24 @@ client.on(
       interaction.commandName ===
       "level-channel"
     ) {
+      if (
+        !isModerator(
+          interaction.member
+        )
+      ) {
+        await interaction
+          .reply({
+            content:
+              "You do not have permission to use this command.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
+
+        return;
+      }
+
       const mode =
         interaction.options.getString(
           "mode",
@@ -2474,126 +2805,6 @@ client.on(
         .reply({
           content:
             `Level-up messages will now be sent in ${channel}.`,
-          ephemeral: true,
-        })
-        .catch(
-          () => {}
-        );
-
-      return;
-    }
-
-    /* =====================================================
-       /VAFK
-    ===================================================== */
-
-    if (
-      interaction.commandName ===
-      "vafk"
-    ) {
-      const channel =
-        interaction.options.getChannel(
-          "channel",
-          true
-        );
-
-      /*
-        Extra safety check even though the slash
-        command only accepts voice channels.
-      */
-
-      if (
-        channel.type !==
-        ChannelType.GuildVoice
-      ) {
-        await interaction
-          .reply({
-            content:
-              "Please select a voice channel.",
-            ephemeral: true,
-          })
-          .catch(
-            () => {}
-          );
-
-        return;
-      }
-
-      /*
-        Check that the bot can actually connect
-        to the selected voice channel.
-      */
-
-      const botMember =
-        interaction.guild.members.me;
-
-      if (!botMember) {
-        await interaction
-          .reply({
-            content:
-              "I couldn't find my member information in this server.",
-            ephemeral: true,
-          })
-          .catch(
-            () => {}
-          );
-
-        return;
-      }
-
-      const permissions =
-        channel.permissionsFor(
-          botMember
-        );
-
-      if (
-        !permissions ||
-        !permissions.has(
-          PermissionFlagsBits.Connect
-        )
-      ) {
-        await interaction
-          .reply({
-            content:
-              `I don't have permission to connect to ${channel}.`,
-            ephemeral: true,
-          })
-          .catch(
-            () => {}
-          );
-
-        return;
-      }
-
-      /*
-        Save the selected channel and join it.
-      */
-
-      const joined =
-        await joinAFKVoiceForGuild(
-          interaction.guild,
-          channel.id,
-          true
-        );
-
-      if (!joined) {
-        await interaction
-          .reply({
-            content:
-              "I couldn't join that voice channel. Check my voice permissions and try again.",
-            ephemeral: true,
-          })
-          .catch(
-            () => {}
-          );
-
-        return;
-      }
-
-      await interaction
-        .reply({
-          content:
-            `I'm now AFK in ${channel} until the bot is turned off, removed, or the channel is deleted.`,
           ephemeral: true,
         })
         .catch(
