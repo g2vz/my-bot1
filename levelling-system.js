@@ -74,16 +74,6 @@ function getUser(guildId, userId) {
   return levels[guildId][userId];
 }
 
-/*
-  Level XP curve.
-
-  Level 0 -> 0 XP
-  Level 1 -> 100 XP
-  Level 2 -> 282 XP
-  Level 3 -> 519 XP
-  etc.
-*/
-
 function xpForLevel(level) {
   return Math.floor(100 * Math.pow(level, 1.5));
 }
@@ -99,24 +89,37 @@ function calculateLevel(xp) {
 }
 
 function progressBar(current, needed, size = 12) {
-  if (needed <= 0) return "████████████";
+  if (needed <= 0) {
+    return "████████████";
+  }
 
-  const filled = Math.floor((current / needed) * size);
+  const percentage = Math.max(
+    0,
+    Math.min(1, current / needed)
+  );
+
+  const filled = Math.floor(percentage * size);
 
   return (
-    "█".repeat(Math.max(0, Math.min(size, filled))) +
-    "░".repeat(Math.max(0, size - filled))
+    "█".repeat(filled) +
+    "░".repeat(size - filled)
   );
 }
 
 function getRank(guildId, userId) {
-  const users = Object.entries(levels[guildId] || {});
+  const users = Object.entries(
+    levels[guildId] || {}
+  );
 
   users.sort((a, b) => b[1].xp - a[1].xp);
 
-  const index = users.findIndex(([id]) => id === userId);
+  const index = users.findIndex(
+    ([id]) => id === userId
+  );
 
-  return index === -1 ? users.length + 1 : index + 1;
+  return index === -1
+    ? users.length + 1
+    : index + 1;
 }
 
 /* =========================
@@ -136,27 +139,42 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("top-xp")
-    .setDescription("shows the top 10 members in XP"),
+    .setDescription("Show the top 100 members by XP"),
 
   new SlashCommandBuilder()
     .setName("xp-annc")
-    .setDescription("Configure daily or weekly XP announcements")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDescription(
+      "Configure daily or weekly XP announcements"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    )
     .addStringOption((option) =>
       option
         .setName("type")
         .setDescription("Announcement type")
         .setRequired(true)
         .addChoices(
-          { name: "Daily", value: "daily" },
-          { name: "Weekly", value: "weekly" },
-          { name: "Off", value: "off" }
+          {
+            name: "Daily",
+            value: "daily",
+          },
+          {
+            name: "Weekly",
+            value: "weekly",
+          },
+          {
+            name: "Off",
+            value: "off",
+          }
         )
     )
     .addChannelOption((option) =>
       option
         .setName("channel")
-        .setDescription("Channel where the annc will be sent")
+        .setDescription(
+          "Channel where the announcement will be sent"
+        )
         .setRequired(false)
     ),
 ].map((command) => command.toJSON());
@@ -178,22 +196,35 @@ const client = new Client({
 ========================= */
 
 async function registerCommands() {
-  const rest = new REST({ version: "10" }).setToken(TOKEN);
+  const rest = new REST({
+    version: "10",
+  }).setToken(TOKEN);
 
   if (GUILD_ID) {
     await rest.put(
-      Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-      { body: commands }
+      Routes.applicationGuildCommands(
+        CLIENT_ID,
+        GUILD_ID
+      ),
+      {
+        body: commands,
+      }
     );
 
-    console.log("Guild slash commands registered.");
+    console.log(
+      "Guild slash commands registered."
+    );
   } else {
     await rest.put(
       Routes.applicationCommands(CLIENT_ID),
-      { body: commands }
+      {
+        body: commands,
+      }
     );
 
-    console.log("Global slash commands registered.");
+    console.log(
+      "Global slash commands registered."
+    );
   }
 }
 
@@ -201,112 +232,197 @@ async function registerCommands() {
    READY
 ========================= */
 
-client.once(Events.ClientReady, async (bot) => {
-  console.log(`Logged in as ${bot.user.tag}`);
+client.once(
+  Events.ClientReady,
+  async (bot) => {
+    console.log(
+      `Logged in as ${bot.user.tag}`
+    );
 
-  try {
-    await registerCommands();
-  } catch (error) {
-    console.error("Failed to register commands:", error);
+    try {
+      await registerCommands();
+    } catch (error) {
+      console.error(
+        "Failed to register commands:",
+        error
+      );
+    }
   }
-});
+);
 
 /* =========================
    MESSAGE XP
 ========================= */
 
-client.on(Events.MessageCreate, async (message) => {
-  if (!message.guild) return;
-  if (message.author.bot) return;
-  if (!message.content) return;
+client.on(
+  Events.MessageCreate,
+  async (message) => {
+    if (!message.guild) return;
+    if (message.author.bot) return;
+    if (!message.content) return;
 
-  const user = getUser(
-    message.guild.id,
-    message.author.id
-  );
+    const user = getUser(
+      message.guild.id,
+      message.author.id
+    );
 
-  const oldLevel = user.level;
+    const oldLevel = user.level;
 
-  /*
-    0.50 XP per character.
+    const words = message.content
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
 
-    Spaces are ignored so people can't farm XP
-    by sending huge amounts of spaces.
-  */
+    if (!words.length) return;
 
-const words = message.content.trim().split(/\s+/).filter(Boolean);
-let earnedXP = words.length * (Math.floor(Math.random() * 10) + 1);
+    /*
+      Normal XP:
+      Each word gives a random amount from 1 to 10 XP.
+    */
 
-// 13% فرصة XP إضافي بين 11 و99
-if (Math.random() < 0.13) {
-    earnedXP = words.length * (Math.floor(Math.random() * 89) + 11);
-}
+    let xpPerWord =
+      Math.floor(Math.random() * 10) + 1;
 
-// 5% فرصة تخطي إلى المستوى التالي
-if (Math.random() < 0.05) {
-    user.level += 1;
-}
+    /*
+      13% chance:
+      Each word gives a random amount from 11 to 99 XP.
+    */
 
-  user.xp += earnedXP;
-  user.messages += 1;
+    if (Math.random() < 0.13) {
+      xpPerWord =
+        Math.floor(Math.random() * 89) + 11;
+    }
 
-  user.level = calculateLevel(user.xp);
+    const earnedXP =
+      words.length * xpPerWord;
 
-  saveAll();
+    user.xp += earnedXP;
+    user.messages += 1;
 
-  /* =========================
-     LEVEL UP
-  ========================= */
+    /*
+      5% chance:
+      Move directly to the next level.
+    */
 
-  if (user.level > oldLevel) {
-    const currentLevelXP = xpForLevel(user.level);
-    const nextLevelXP = xpForLevel(user.level + 1);
+    const levelSkip =
+      Math.random() < 0.05;
 
-    const currentXP = user.xp - currentLevelXP;
-    const neededXP = nextLevelXP - currentLevelXP;
+    if (levelSkip) {
+      const nextLevel =
+        Math.max(
+          oldLevel + 1,
+          calculateLevel(user.xp)
+        );
 
-    const embed = new EmbedBuilder()
-      .setColor(0x81c1eb)
-      .setTitle("you have levelled up! keep it up for a cookei🍪!")
-      .setDescription(
-        `${message.author} reached **Level ${user.level}**!`
-      )
-      .addFields(
-        {
-          name: "XP",
-          value: `**${user.xp.toFixed(2)} XP**`,
-          inline: true,
-        },
-        {
-          name: "Progress",
-          value:
-            `${progressBar(currentXP, neededXP)}\n` +
-            `${currentXP.toFixed(2)} / ${neededXP.toFixed(2)} XP`,
-        }
-      );
+      user.level = nextLevel;
 
-    await message.channel.send({
-      embeds: [embed],
-    }).catch(() => {});
+      const requiredXP =
+        xpForLevel(nextLevel);
+
+      if (user.xp < requiredXP) {
+        user.xp = requiredXP;
+      }
+    } else {
+      user.level =
+        calculateLevel(user.xp);
+    }
+
+    saveAll();
+
+    /* =========================
+       LEVEL UP
+    ========================= */
+
+    if (user.level > oldLevel) {
+      const currentLevelXP =
+        xpForLevel(user.level);
+
+      const nextLevelXP =
+        xpForLevel(user.level + 1);
+
+      const currentXP =
+        user.xp - currentLevelXP;
+
+      const neededXP =
+        nextLevelXP - currentLevelXP;
+
+      const embed =
+        new EmbedBuilder()
+          .setColor(0x81c1eb)
+          .setTitle(
+            "you have levelled up! keep it up for a cookie 🍪!"
+          )
+          .setDescription(
+            `${message.author} reached **Level ${user.level}**!`
+          )
+          .addFields(
+            {
+              name: "XP",
+              value:
+                `**${user.xp.toFixed(2)} XP**`,
+              inline: true,
+            },
+            {
+              name: "Progress",
+              value:
+                `${progressBar(
+                  currentXP,
+                  neededXP
+                )}\n` +
+                `${currentXP.toFixed(2)} / ${neededXP.toFixed(2)} XP`,
+            }
+          );
+
+      await message.channel
+        .send({
+          embeds: [embed],
+        })
+        .catch(() => {});
+    }
   }
-});
+);
 
 /* =========================
    TOP XP
 ========================= */
 
 function getTopXP(guildId) {
-  return Object.entries(levels[guildId] || {})
-    .sort((a, b) => b[1].xp - a[1].xp)
+  return Object.entries(
+    levels[guildId] || {}
+  )
+    .sort(
+      (a, b) => b[1].xp - a[1].xp
+    )
     .slice(0, 100);
 }
 
-async function buildAnnouncement(guildId, type, page = 0) {
+/* =========================
+   ANNOUNCEMENT BUILDER
+========================= */
+
+async function buildAnnouncement(
+  guildId,
+  type,
+  page = 0
+) {
   const top = getTopXP(guildId);
 
-  const start = page * 10;
-  const pageUsers = top.slice(start, start + 10);
-  const totalPages = Math.max(1, Math.ceil(top.length / 10));
+  const totalPages = Math.max(
+    1,
+    Math.ceil(top.length / 10)
+  );
+
+  const safePage = Math.max(
+    0,
+    Math.min(page, totalPages - 1)
+  );
+
+  const start = safePage * 10;
+
+  const pageUsers = top.slice(
+    start,
+    start + 10
+  );
 
   const title =
     type === "daily"
@@ -315,13 +431,23 @@ async function buildAnnouncement(guildId, type, page = 0) {
 
   const rows = [];
 
-  for (let i = 0; i < pageUsers.length; i++) {
-    const [userId, user] = pageUsers[i];
+  for (
+    let i = 0;
+    i < pageUsers.length;
+    i++
+  ) {
+    const [
+      userId,
+      user,
+    ] = pageUsers[i];
 
-    const member = await client.guilds.cache
-      .get(guildId)
-      ?.members.fetch(userId)
-      .catch(() => null);
+    const guild =
+      client.guilds.cache.get(guildId);
+
+    const member =
+      await guild?.members
+        .fetch(userId)
+        .catch(() => null);
 
     const name =
       member?.displayName ||
@@ -333,30 +459,51 @@ async function buildAnnouncement(guildId, type, page = 0) {
     );
   }
 
-  const embed = new EmbedBuilder()
-    .setColor(0x00d4ff)
-    .setTitle(title)
-    .setDescription(
-      `**Top 100 members with most XP**\n\n` +
-      (rows.length ? rows.join("\n") : "No XP data yet.")
-    )
-    .setFooter({
-      text: `Page ${page + 1}/${totalPages}`,
-    });
+  const embed =
+    new EmbedBuilder()
+      .setColor(0x00d4ff)
+      .setTitle(title)
+      .setDescription(
+        `**Top 100 members with most XP**\n\n` +
+        (
+          rows.length
+            ? rows.join("\n")
+            : "No XP data yet."
+        )
+      )
+      .setFooter({
+        text:
+          `Page ${safePage + 1}/${totalPages}`,
+      });
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`xp_prev_${guildId}_${type}`)
-      .setLabel("Previous")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page === 0),
+  const row =
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `xp_prev_${guildId}_${type}`
+          )
+          .setLabel("Previous")
+          .setStyle(
+            ButtonStyle.Secondary
+          )
+          .setDisabled(
+            safePage === 0
+          ),
 
-    new ButtonBuilder()
-      .setCustomId(`xp_next_${guildId}_${type}`)
-      .setLabel("Next")
-      .setStyle(ButtonStyle.Primary)
-      .setDisabled(page >= totalPages - 1)
-  );
+        new ButtonBuilder()
+          .setCustomId(
+            `xp_next_${guildId}_${type}`
+          )
+          .setLabel("Next")
+          .setStyle(
+            ButtonStyle.Primary
+          )
+          .setDisabled(
+            safePage >=
+              totalPages - 1
+          )
+      );
 
   return {
     embeds: [embed],
@@ -364,310 +511,405 @@ async function buildAnnouncement(guildId, type, page = 0) {
   };
 }
 
+/* =========================
+   SEND ANNOUNCEMENT
+========================= */
+
 async function sendAnnouncement(type) {
-  for (const [guildId, config] of Object.entries(announcements)) {
+  for (
+    const [
+      guildId,
+      config,
+    ] of Object.entries(announcements)
+  ) {
     if (config.type !== type) continue;
     if (!config.channelId) continue;
 
-    const guild = client.guilds.cache.get(guildId);
-    if (!guild) continue;
-
-    const channel = guild.channels.cache.get(config.channelId);
-    if (!channel || !channel.isTextBased()) continue;
-
-    const message = await buildAnnouncement(guildId, type, 0);
-
-    await channel.send(message).catch(() => {});
-  }
-}
-  for (const [guildId, config] of Object.entries(announcements)) {
-    if (config.type !== type) continue;
-    if (!config.channelId) continue;
-
-    const guild = client.guilds.cache.get(guildId);
+    const guild =
+      client.guilds.cache.get(guildId);
 
     if (!guild) continue;
 
-    const channel = guild.channels.cache.get(
-      config.channelId
-    );
+    const channel =
+      guild.channels.cache.get(
+        config.channelId
+      );
 
-    if (!channel || !channel.isTextBased()) continue;
+    if (
+      !channel ||
+      !channel.isTextBased()
+    ) {
+      continue;
+    }
 
-    await channel.send(
-      buildAnnouncement(guildId, type)
-    ).catch(() => {});
+    const announcement =
+      await buildAnnouncement(
+        guildId,
+        type,
+        0
+      );
+
+    await channel
+      .send(announcement)
+      .catch(() => {});
   }
 }
 
-/*
-  Daily:
-  Every day at 00:00 UTC
-
-  Weekly:
-  Every Monday at 00:00 UTC
-*/
+/* =========================
+   DAILY / WEEKLY TIMER
+========================= */
 
 let lastDaily = "";
 let lastWeekly = "";
 
-setInterval(async () => {
-  const now = new Date();
+setInterval(
+  async () => {
+    const now = new Date();
 
-  const dateKey = now.toISOString().slice(0, 10);
+    const dateKey =
+      now.toISOString().slice(0, 10);
 
-  const weekKey =
-    `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}`;
+    const weekKey =
+      `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}`;
 
-  if (
-    now.getUTCHours() === 0 &&
-    now.getUTCMinutes() === 0 &&
-    lastDaily !== dateKey
-  ) {
-    lastDaily = dateKey;
+    if (
+      now.getUTCHours() === 0 &&
+      now.getUTCMinutes() === 0 &&
+      lastDaily !== dateKey
+    ) {
+      lastDaily = dateKey;
 
-    await sendAnnouncement("daily");
-  }
+      await sendAnnouncement(
+        "daily"
+      );
+    }
 
-  if (
-    now.getUTCDay() === 1 &&
-    now.getUTCHours() === 0 &&
-    now.getUTCMinutes() === 0 &&
-    lastWeekly !== weekKey
-  ) {
-    lastWeekly = weekKey;
+    if (
+      now.getUTCDay() === 1 &&
+      now.getUTCHours() === 0 &&
+      now.getUTCMinutes() === 0 &&
+      lastWeekly !== weekKey
+    ) {
+      lastWeekly = weekKey;
 
-    await sendAnnouncement("weekly");
-  }
-}, 60_000);
+      await sendAnnouncement(
+        "weekly"
+      );
+    }
+  },
+  60_000
+);
 
 /* =========================
    INTERACTIONS
 ========================= */
 
-client.on(Events.InteractionCreate, async (interaction) => {
-  client.on(Events.InteractionCreate, async (interaction) => {
+client.on(
+  Events.InteractionCreate,
+  async (interaction) => {
 
-  if (interaction.isButton()) {
-    // Button code goes here
-  }
+    /* =========================
+       BUTTONS
+    ========================= */
 
-  if (!interaction.isChatInputCommand()) return;
-  if (!interaction.guild) return;
-  if (!interaction.isChatInputCommand()) return;
     if (interaction.isButton()) {
-    const parts = interaction.customId.split("_");
+      const parts =
+        interaction.customId.split("_");
 
-    if (parts[0] !== "xp") return;
+      if (parts[0] !== "xp") {
+        return;
+      }
 
-    const direction = parts[1];
-    const guildIdFromButton = parts[2];
-    const type = parts[3];
+      const direction = parts[1];
+      const guildIdFromButton = parts[2];
+      const type = parts[3];
 
-    if (guildIdFromButton !== guildId) return;
+      if (
+        !interaction.guild ||
+        guildIdFromButton !==
+          interaction.guild.id
+      ) {
+        return;
+      }
 
-    const currentPage =
-      interaction.message.embeds[0]?.footer?.text
-        ?.match(/Page (\d+)\/(\d+)/);
+      const footer =
+        interaction.message
+          .embeds[0]
+          ?.footer
+          ?.text || "";
 
-    const page = currentPage
-      ? Number(currentPage[1]) - 1
-      : 0;
+      const pageMatch =
+        footer.match(
+          /Page (\d+)\/(\d+)/
+        );
 
-    const newPage =
-      direction === "next"
-        ? page + 1
-        : Math.max(0, page - 1);
+      const currentPage =
+        pageMatch
+          ? Number(pageMatch[1]) - 1
+          : 0;
 
-    const updated = await buildAnnouncement(
-      guildId,
-      type,
-      newPage
-    );
+      const totalPages =
+        pageMatch
+          ? Number(pageMatch[2])
+          : 1;
 
-    await interaction.update(updated);
-  }
-  if (!interaction.guild) return;
+      let newPage =
+        currentPage;
 
-  const guildId = interaction.guild.id;
+      if (direction === "next") {
+        newPage =
+          Math.min(
+            currentPage + 1,
+            totalPages - 1
+          );
+      }
 
-  /* =========================
-     /LEVEL
-  ========================= */
+      if (direction === "prev") {
+        newPage =
+          Math.max(
+            currentPage - 1,
+            0
+          );
+      }
 
-  if (interaction.commandName === "level") {
-    const target =
-      interaction.options.getUser("member") ||
-      interaction.user;
+      const updated =
+        await buildAnnouncement(
+          guildIdFromButton,
+          type,
+          newPage
+        );
 
-    const member =
-      await interaction.guild.members
-        .fetch(target.id)
-        .catch(() => null);
+      await interaction
+        .update(updated)
+        .catch(() => {});
 
-    const displayName =
-      member?.displayName ||
-      target.username;
+      return;
+    }
 
-    const user = getUser(
-      guildId,
-      target.id
-    );
+    /* =========================
+       SLASH COMMAND CHECK
+    ========================= */
 
-    const rank = getRank(
-      guildId,
-      target.id
-    );
+    if (
+      !interaction.isChatInputCommand()
+    ) {
+      return;
+    }
 
-    const currentLevelXP =
-      xpForLevel(user.level);
+    if (!interaction.guild) {
+      return;
+    }
 
-    const nextLevelXP =
-      xpForLevel(user.level + 1);
+    const guildId =
+      interaction.guild.id;
 
-    const currentXP =
-      user.xp - currentLevelXP;
+    /* =========================
+       /LEVEL
+    ========================= */
 
-    const neededXP =
-      nextLevelXP - currentLevelXP;
+    if (
+      interaction.commandName ===
+      "level"
+    ) {
+      const target =
+        interaction.options.getUser(
+          "member"
+        ) || interaction.user;
 
-    const embed = new EmbedBuilder()
-      .setColor(0x00d4ff)
-      .setAuthor({
-        name: `${displayName}'s information`,
-        iconURL: target.displayAvatarURL(),
-      })
-      .setDescription(
-        `**Level ${user.level}**\n` +
-        `Rank **#${rank}**\n\n` +
-        `${progressBar(currentXP, neededXP)}\n` +
-        `${currentXP.toFixed(2)} / ${neededXP.toFixed(2)} XP`
-      )
-      .addFields(
-        {
-          name: "XP",
-          value: `**${user.xp.toFixed(2)}**`,
-          inline: true,
-        },
-        {
-          name: "Level",
-          value: `**${user.level}**`,
-          inline: true,
-        },
-        {
-          name: "Messages",
-          value: `**${user.messages.toLocaleString()}**`,
-          inline: true,
-        },
-        {
-          name: "Server",
-          value: interaction.guild.name,
-        }
-      )
-      .setThumbnail(target.displayAvatarURL())
-      .setFooter({
-        text:
-          "Keep it up to claim higher ranks and get more cookies! 🍪",
+      const member =
+        await interaction.guild.members
+          .fetch(target.id)
+          .catch(() => null);
+
+      const displayName =
+        member?.displayName ||
+        target.username;
+
+      const user =
+        getUser(
+          guildId,
+          target.id
+        );
+
+      const rank =
+        getRank(
+          guildId,
+          target.id
+        );
+
+      const currentLevelXP =
+        xpForLevel(user.level);
+
+      const nextLevelXP =
+        xpForLevel(
+          user.level + 1
+        );
+
+      const currentXP =
+        user.xp -
+        currentLevelXP;
+
+      const neededXP =
+        nextLevelXP -
+        currentLevelXP;
+
+      const embed =
+        new EmbedBuilder()
+          .setColor(0x00d4ff)
+          .setAuthor({
+            name:
+              `${displayName}'s information`,
+            iconURL:
+              target.displayAvatarURL(),
+          })
+          .setDescription(
+            `**Level ${user.level}**\n` +
+            `Rank **#${rank}**\n\n` +
+            `${progressBar(
+              currentXP,
+              neededXP
+            )}\n` +
+            `${currentXP.toFixed(2)} / ${neededXP.toFixed(2)} XP`
+          )
+          .addFields(
+            {
+              name: "XP",
+              value:
+                `**${user.xp.toFixed(2)}**`,
+              inline: true,
+            },
+            {
+              name: "Level",
+              value:
+                `**${user.level}**`,
+              inline: true,
+            },
+            {
+              name: "Messages",
+              value:
+                `**${user.messages.toLocaleString()}**`,
+              inline: true,
+            },
+            {
+              name: "Server",
+              value:
+                interaction.guild.name,
+            }
+          )
+          .setThumbnail(
+            target.displayAvatarURL()
+          )
+          .setFooter({
+            text:
+              "Keep it up to claim higher ranks and get more cookies! 🍪",
+          });
+
+      await interaction.reply({
+        embeds: [embed],
       });
 
-    await interaction.reply({
-      embeds: [embed],
-    });
+      return;
+    }
 
-    return;
-  }
+    /* =========================
+       /TOP-XP
+    ========================= */
 
-  /* =========================
-     /TOP-XP
-  ========================= */
+    if (
+      interaction.commandName ===
+      "top-xp"
+    ) {
+      const top =
+        getTopXP(guildId);
 
-  if (interaction.commandName === "top-xp") {
-    const top = getTopXP(guildId);
+      const totalPages =
+        Math.max(
+          1,
+          Math.ceil(top.length / 10)
+        );
 
-    const medals = ["🥇", "🥈", "🥉"];
+      const page = 0;
 
-    const rows = top.map(([userId, user], index) => {
-      const position =
-        medals[index] || `**#${index + 1}**`;
+      const announcement =
+        await buildAnnouncement(
+          guildId,
+          "daily",
+          page
+        );
 
-      return (
-        `${position} <@${userId}>` +
-        ` • Level **${user.level}**` +
-        ` • **${user.xp.toFixed(2)} XP**`
-      );
-    });
-
-    const embed = new EmbedBuilder()
-      .setColor(0x00d4ff)
-      .setTitle("🏆 Top XP")
-      .setDescription(
-        rows.length
-          ? rows.join("\n")
-          : "No XP data yet."
+      await interaction.reply(
+        announcement
       );
 
-    await interaction.reply({
-      embeds: [embed],
-    });
+      return;
+    }
 
-    return;
-  }
+    /* =========================
+       /XP-ANNC
+    ========================= */
 
-  /* =========================
-     /ANNOUNCEMENT
-  ========================= */
+    if (
+      interaction.commandName ===
+      "xp-annc"
+    ) {
+      const type =
+        interaction.options.getString(
+          "type",
+          true
+        );
 
-  if (interaction.commandName === "xp-annc") {
-    const type =
-      interaction.options.getString(
-        "type",
-        true
-      );
+      const channel =
+        interaction.options.getChannel(
+          "channel"
+        );
 
-    const channel =
-      interaction.options.getChannel(
-        "channel"
-      );
+      if (type === "off") {
+        delete announcements[
+          guildId
+        ];
 
-    if (type === "off") {
-      delete announcements[guildId];
+        saveAll();
+
+        await interaction.reply({
+          content:
+            "XP announcements are now disabled.",
+          ephemeral: true,
+        });
+
+        return;
+      }
+
+      if (
+        !channel ||
+        !channel.isTextBased()
+      ) {
+        await interaction.reply({
+          content:
+            "Please select a text channel.",
+          ephemeral: true,
+        });
+
+        return;
+      }
+
+      announcements[guildId] = {
+        type,
+        channelId: channel.id,
+      };
 
       saveAll();
 
       await interaction.reply({
         content:
-          "XP announcements are now disabled.",
+          `${type === "daily" ? "Daily" : "Weekly"} ` +
+          `XP announcements are now enabled in ${channel}.`,
         ephemeral: true,
       });
 
       return;
     }
-
-    if (!channel || !channel.isTextBased()) {
-      await interaction.reply({
-        content:
-          "Please select a text channel.",
-        ephemeral: true,
-      });
-
-      return;
-    }
-
-    announcements[guildId] = {
-      type,
-      channelId: channel.id,
-    };
-
-    saveAll();
-
-    await interaction.reply({
-      content:
-        `${type === "daily" ? "Daily" : "Weekly"} ` +
-        `XP announcements are now enabled in ${channel}.`,
-      ephemeral: true,
-    });
   }
-});
+);
 
 /* =========================
    LOGIN
