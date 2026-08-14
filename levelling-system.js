@@ -144,7 +144,22 @@ function getGuildSettings(guildId) {
       spamExemptChannelId: null,
       xpExemptChannelId: null,
       levelChannelId: null,
+      afkVoiceChannelId: null,
     };
+  }
+
+  /*
+    Keep compatibility with existing settings files
+    that were created before /vafk was added.
+  */
+
+  if (
+    !Object.prototype.hasOwnProperty.call(
+      settings[guildId],
+      "afkVoiceChannelId"
+    )
+  ) {
+    settings[guildId].afkVoiceChannelId = null;
   }
 
   return settings[guildId];
@@ -843,6 +858,31 @@ const commands = [
             ChannelType.GuildAnnouncement
           )
     ),
+
+  /* =========================
+     /vafk
+  ========================= */
+
+  new SlashCommandBuilder()
+    .setName("vafk")
+    .setDescription(
+      "Make the bot join a voice channel and stay AFK there"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    )
+    .addChannelOption(
+      (option) =>
+        option
+          .setName("channel")
+          .setDescription(
+            "Voice channel where the bot should stay AFK"
+          )
+          .setRequired(true)
+          .addChannelTypes(
+            ChannelType.GuildVoice
+          )
+    ),
 ].map(
   (command) =>
     command.toJSON()
@@ -907,20 +947,56 @@ async function registerCommands() {
    AFK VOICE 24/7
 ========================================================= */
 
-async function joinAFKVoice() {
-  if (
-    !AFK_VOICE_CHANNEL_ID
-  ) {
-    console.log(
-      "AFK_VOICE_CHANNEL_ID is not configured."
-    );
+async function joinAFKVoice(
+  requestedChannelId = null,
+  saveSetting = false
+) {
+  let channelId =
+    requestedChannelId;
+
+  /*
+    If /vafk did not provide a channel,
+    use the saved guild setting first.
+
+    The old AFK_VOICE_CHANNEL_ID environment
+    variable remains as a fallback for compatibility.
+  */
+
+  if (!channelId) {
+    for (
+      const guild of client.guilds.cache.values()
+    ) {
+      const guildSettings =
+        getGuildSettings(
+          guild.id
+        );
+
+      const savedChannelId =
+        guildSettings.afkVoiceChannelId ||
+        AFK_VOICE_CHANNEL_ID;
+
+      if (!savedChannelId) {
+        continue;
+      }
+
+      await joinAFKVoiceForGuild(
+        guild,
+        savedChannelId,
+        false
+      );
+    }
 
     return;
   }
 
+  /*
+    Find the guild containing the selected
+    voice channel.
+  */
+
   const channel =
     client.channels.cache.get(
-      AFK_VOICE_CHANNEL_ID
+      channelId
     );
 
   if (!channel) {
@@ -928,7 +1004,70 @@ async function joinAFKVoice() {
       "AFK voice channel was not found."
     );
 
-    return;
+    return false;
+  }
+
+  if (
+    channel.type !==
+    ChannelType.GuildVoice
+  ) {
+    console.error(
+      "AFK voice channel is not a voice channel."
+    );
+
+    return false;
+  }
+
+  const result =
+    await joinAFKVoiceForGuild(
+      channel.guild,
+      channel.id,
+      saveSetting
+    );
+
+  return result;
+}
+
+/* =========================================================
+   JOIN AFK VOICE FOR GUILD
+========================================================= */
+
+async function joinAFKVoiceForGuild(
+  guild,
+  channelId,
+  saveSetting = false
+) {
+  const channel =
+    guild.channels.cache.get(
+      channelId
+    );
+
+  if (!channel) {
+    console.error(
+      `AFK voice channel ${channelId} was not found in ${guild.name}.`
+    );
+
+    /*
+      If the saved channel was deleted,
+      remove the invalid saved setting.
+    */
+
+    const guildSettings =
+      getGuildSettings(
+        guild.id
+      );
+
+    if (
+      guildSettings.afkVoiceChannelId ===
+      channelId
+    ) {
+      guildSettings.afkVoiceChannelId =
+        null;
+
+      saveAll();
+    }
+
+    return false;
   }
 
   if (
@@ -939,26 +1078,101 @@ async function joinAFKVoice() {
       "AFK_VOICE_CHANNEL_ID is not a voice channel."
     );
 
-    return;
+    return false;
+  }
+
+  const botMember =
+    guild.members.me;
+
+  if (!botMember) {
+    console.error(
+      `Bot member was not found in ${guild.name}.`
+    );
+
+    return false;
+  }
+
+  /*
+    The bot needs Connect permission to enter
+    and Speak is not required because the bot
+    is self-muted.
+  */
+
+  const permissions =
+    channel.permissionsFor(
+      botMember
+    );
+
+  if (
+    !permissions ||
+    !permissions.has(
+      PermissionFlagsBits.Connect
+    )
+  ) {
+    console.error(
+      `Bot does not have Connect permission in ${channel.name}.`
+    );
+
+    return false;
   }
 
   try {
     const existing =
       getVoiceConnection(
-        channel.guild.id
+        guild.id
       );
 
+    /*
+      If already connected to this exact channel,
+      keep the current connection alive.
+    */
+
     if (existing) {
-      return;
+      const currentChannelId =
+        existing.joinConfig
+          ?.channelId;
+
+      if (
+        currentChannelId ===
+        channel.id
+      ) {
+        if (saveSetting) {
+          const guildSettings =
+            getGuildSettings(
+              guild.id
+            );
+
+          guildSettings.afkVoiceChannelId =
+            channel.id;
+
+          saveAll();
+        }
+
+        return true;
+      }
+
+      /*
+        /vafk selected another voice channel.
+        Move the bot by destroying the old
+        connection first.
+      */
+
+      try {
+        existing.destroy();
+      } catch (error) {
+        console.error(
+          "Failed to destroy previous AFK voice connection:",
+          error
+        );
+      }
     }
 
     const connection =
       joinVoiceChannel({
         channelId: channel.id,
-        guildId: channel.guild.id,
+        guildId: guild.id,
         adapterCreator:
-          channel.guild
-            .voiceAdapterCreator,
+          guild.voiceAdapterCreator,
         selfDeaf: true,
         selfMute: true,
       });
@@ -980,19 +1194,40 @@ async function joinAFKVoice() {
         newState
       ) => {
         console.log(
-          `AFK voice state: ${oldState.status} -> ${newState.status}`
+          `AFK voice state in ${guild.name}: ${oldState.status} -> ${newState.status}`
         );
       }
     );
 
+    /*
+      Save the selected voice channel so the
+      bot knows where to return after restart.
+    */
+
+    if (saveSetting) {
+      const guildSettings =
+        getGuildSettings(
+          guild.id
+        );
+
+      guildSettings.afkVoiceChannelId =
+        channel.id;
+
+      saveAll();
+    }
+
     console.log(
-      `Joined AFK voice channel: ${channel.name}`
+      `Joined AFK voice channel: ${channel.name} in ${guild.name}`
     );
+
+    return true;
   } catch (error) {
     console.error(
       "Failed to join AFK voice:",
       error
     );
+
+    return false;
   }
 }
 
@@ -1015,6 +1250,14 @@ client.once(
         error
       );
     }
+
+    /*
+      Restore saved /vafk voice channels after
+      the bot starts again.
+
+      The old AFK_VOICE_CHANNEL_ID environment
+      variable is still supported as fallback.
+    */
 
     await joinAFKVoice();
   }
@@ -2231,6 +2474,126 @@ client.on(
         .reply({
           content:
             `Level-up messages will now be sent in ${channel}.`,
+          ephemeral: true,
+        })
+        .catch(
+          () => {}
+        );
+
+      return;
+    }
+
+    /* =====================================================
+       /VAFK
+    ===================================================== */
+
+    if (
+      interaction.commandName ===
+      "vafk"
+    ) {
+      const channel =
+        interaction.options.getChannel(
+          "channel",
+          true
+        );
+
+      /*
+        Extra safety check even though the slash
+        command only accepts voice channels.
+      */
+
+      if (
+        channel.type !==
+        ChannelType.GuildVoice
+      ) {
+        await interaction
+          .reply({
+            content:
+              "Please select a voice channel.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
+
+        return;
+      }
+
+      /*
+        Check that the bot can actually connect
+        to the selected voice channel.
+      */
+
+      const botMember =
+        interaction.guild.members.me;
+
+      if (!botMember) {
+        await interaction
+          .reply({
+            content:
+              "I couldn't find my member information in this server.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
+
+        return;
+      }
+
+      const permissions =
+        channel.permissionsFor(
+          botMember
+        );
+
+      if (
+        !permissions ||
+        !permissions.has(
+          PermissionFlagsBits.Connect
+        )
+      ) {
+        await interaction
+          .reply({
+            content:
+              `I don't have permission to connect to ${channel}.`,
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
+
+        return;
+      }
+
+      /*
+        Save the selected channel and join it.
+      */
+
+      const joined =
+        await joinAFKVoiceForGuild(
+          interaction.guild,
+          channel.id,
+          true
+        );
+
+      if (!joined) {
+        await interaction
+          .reply({
+            content:
+              "I couldn't join that voice channel. Check my voice permissions and try again.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
+
+        return;
+      }
+
+      await interaction
+        .reply({
+          content:
+            `I'm now AFK in ${channel} until the bot is turned off, removed, or the channel is deleted.`,
           ephemeral: true,
         })
         .catch(
