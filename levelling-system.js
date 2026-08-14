@@ -29,36 +29,86 @@ if (!TOKEN || !CLIENT_ID) {
 ========================= */
 
 const DATA_DIR = path.join(__dirname, "..", "data");
-const LEVELS_FILE = path.join(DATA_DIR, "levels.json");
-const ANNOUNCEMENTS_FILE = path.join(DATA_DIR, "announcements.json");
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
+const LEVELS_FILE = path.join(
+  DATA_DIR,
+  "levels.json"
+);
+
+const ANNOUNCEMENTS_FILE = path.join(
+  DATA_DIR,
+  "announcements.json"
+);
+
+const SETTINGS_FILE = path.join(
+  DATA_DIR,
+  "settings.json"
+);
+
+fs.mkdirSync(DATA_DIR, {
+  recursive: true,
+});
 
 function load(file, fallback) {
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
+    return JSON.parse(
+      fs.readFileSync(file, "utf8")
+    );
   } catch {
     return fallback;
   }
 }
 
 function save(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+  fs.writeFileSync(
+    file,
+    JSON.stringify(data, null, 2)
+  );
 }
 
-const levels = load(LEVELS_FILE, {});
-const announcements = load(ANNOUNCEMENTS_FILE, {});
+const levels = load(
+  LEVELS_FILE,
+  {}
+);
+
+const announcements = load(
+  ANNOUNCEMENTS_FILE,
+  {}
+);
+
+const settings = load(
+  SETTINGS_FILE,
+  {
+    excludedXpChannels: {},
+    spamUsers: {},
+  }
+);
 
 function saveAll() {
-  save(LEVELS_FILE, levels);
-  save(ANNOUNCEMENTS_FILE, announcements);
+  save(
+    LEVELS_FILE,
+    levels
+  );
+
+  save(
+    ANNOUNCEMENTS_FILE,
+    announcements
+  );
+
+  save(
+    SETTINGS_FILE,
+    settings
+  );
 }
 
 /* =========================
    LEVEL SYSTEM
 ========================= */
 
-function getUser(guildId, userId) {
+function getUser(
+  guildId,
+  userId
+) {
   if (!levels[guildId]) {
     levels[guildId] = {};
   }
@@ -75,51 +125,440 @@ function getUser(guildId, userId) {
 }
 
 function xpForLevel(level) {
-  return Math.floor(100 * Math.pow(level, 1.5));
+  return Math.floor(
+    100 * Math.pow(level, 1.5)
+  );
 }
 
 function calculateLevel(xp) {
   let level = 0;
 
-  while (xp >= xpForLevel(level + 1)) {
+  while (
+    xp >= xpForLevel(level + 1)
+  ) {
     level++;
   }
 
   return level;
 }
 
-function progressBar(current, needed, size = 12) {
+function progressBar(
+  current,
+  needed,
+  size = 12
+) {
   if (needed <= 0) {
     return "████████████";
   }
 
   const percentage = Math.max(
     0,
-    Math.min(1, current / needed)
+    Math.min(
+      1,
+      current / needed
+    )
   );
 
-  const filled = Math.floor(percentage * size);
+  const filled = Math.floor(
+    percentage * size
+  );
 
   return (
     "█".repeat(filled) +
-    "░".repeat(size - filled)
+    "░".repeat(
+      size - filled
+    )
   );
 }
 
-function getRank(guildId, userId) {
+function getRank(
+  guildId,
+  userId
+) {
   const users = Object.entries(
     levels[guildId] || {}
   );
 
-  users.sort((a, b) => b[1].xp - a[1].xp);
-
-  const index = users.findIndex(
-    ([id]) => id === userId
+  users.sort(
+    (a, b) =>
+      b[1].xp - a[1].xp
   );
+
+  const index =
+    users.findIndex(
+      ([id]) =>
+        id === userId
+    );
 
   return index === -1
     ? users.length + 1
     : index + 1;
+}
+
+/* =========================
+   XP EXCLUDED CHANNEL
+========================= */
+
+function isXpExcluded(
+  guildId,
+  channelId
+) {
+  return (
+    settings
+      .excludedXpChannels?.[
+      guildId
+    ] === channelId
+  );
+}
+
+/* =========================
+   COMMAND COOLDOWNS
+========================= */
+
+const commandCooldowns =
+  new Map();
+
+function getCommandCooldown(
+  userId,
+  guildId
+) {
+  return `${guildId}:${userId}`;
+}
+
+function isCommandOnCooldown(
+  userId,
+  guildId
+) {
+  const key =
+    getCommandCooldown(
+      userId,
+      guildId
+    );
+
+  const expires =
+    commandCooldowns.get(key);
+
+  if (!expires) {
+    return false;
+  }
+
+  if (
+    Date.now() >= expires
+  ) {
+    commandCooldowns.delete(
+      key
+    );
+
+    return false;
+  }
+
+  return true;
+}
+
+function setCommandCooldown(
+  userId,
+  guildId
+) {
+  const key =
+    getCommandCooldown(
+      userId,
+      guildId
+    );
+
+  const seconds =
+    Math.random() < 0.25
+      ? 3
+      : 2;
+
+  commandCooldowns.set(
+    key,
+    Date.now() +
+      seconds * 1000
+  );
+
+  return seconds;
+}
+
+function getRemainingCooldown(
+  userId,
+  guildId
+) {
+  const key =
+    getCommandCooldown(
+      userId,
+      guildId
+    );
+
+  const expires =
+    commandCooldowns.get(key);
+
+  if (!expires) {
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    expires - Date.now()
+  );
+}
+
+/* =========================
+   ANTI SPAM
+========================= */
+
+const spamTracker =
+  new Map();
+
+const spamActionLock =
+  new Set();
+
+const SPAM_MESSAGE_LIMIT = 5;
+const SPAM_TIME_WINDOW = 3000;
+
+const FIRST_SPAM_TIMEOUT =
+  5 * 60 * 1000;
+
+const SECOND_SPAM_TIMEOUT =
+  20 * 60 * 1000;
+
+const SPAM_RESPONSE_DELAY =
+  2000;
+
+function getSpamKey(
+  guildId,
+  userId
+) {
+  return `${guildId}:${userId}`;
+}
+
+function getSpamHistory(
+  guildId,
+  userId
+) {
+  const key =
+    getSpamKey(
+      guildId,
+      userId
+    );
+
+  if (!spamTracker.has(key)) {
+    spamTracker.set(
+      key,
+      []
+    );
+  }
+
+  return spamTracker.get(
+    key
+  );
+}
+
+function cleanSpamHistory(
+  timestamps
+) {
+  const now = Date.now();
+
+  return timestamps.filter(
+    (timestamp) =>
+      now - timestamp <=
+      SPAM_TIME_WINDOW
+  );
+}
+
+function hasSpamLock(
+  guildId,
+  userId
+) {
+  return spamActionLock.has(
+    getSpamKey(
+      guildId,
+      userId
+    )
+  );
+}
+
+function addSpamLock(
+  guildId,
+  userId
+) {
+  spamActionLock.add(
+    getSpamKey(
+      guildId,
+      userId
+    )
+  );
+}
+
+function removeSpamLock(
+  guildId,
+  userId
+) {
+  spamActionLock.delete(
+    getSpamKey(
+      guildId,
+      userId
+    )
+  );
+}
+
+function getSpamStrike(
+  guildId,
+  userId
+) {
+  if (!settings.spamUsers) {
+    settings.spamUsers = {};
+  }
+
+  const key =
+    getSpamKey(
+      guildId,
+      userId
+    );
+
+  if (
+    !settings.spamUsers[key]
+  ) {
+    settings.spamUsers[key] = {
+      strikes: 0,
+    };
+  }
+
+  return settings.spamUsers[key];
+}
+
+async function handleSpam(
+  message
+) {
+  if (!message.guild) {
+    return false;
+  }
+
+  if (message.author.bot) {
+    return false;
+  }
+
+  const guildId =
+    message.guild.id;
+
+  const userId =
+    message.author.id;
+
+  const history =
+    getSpamHistory(
+      guildId,
+      userId
+    );
+
+  const now = Date.now();
+
+  const cleaned =
+    cleanSpamHistory(
+      history
+    );
+
+  cleaned.push(now);
+
+  spamTracker.set(
+    getSpamKey(
+      guildId,
+      userId
+    ),
+    cleaned
+  );
+
+  if (
+    cleaned.length <=
+    SPAM_MESSAGE_LIMIT
+  ) {
+    return false;
+  }
+
+  if (
+    hasSpamLock(
+      guildId,
+      userId
+    )
+  ) {
+    return true;
+  }
+
+  addSpamLock(
+    guildId,
+    userId
+  );
+
+  const spamData =
+    getSpamStrike(
+      guildId,
+      userId
+    );
+
+  spamData.strikes += 1;
+
+  const timeoutDuration =
+    spamData.strikes === 1
+      ? FIRST_SPAM_TIMEOUT
+      : SECOND_SPAM_TIMEOUT;
+
+  const warning =
+    spamData.strikes === 1
+      ? "oops! seems like you send a lot of messages in a short time👀"
+      : "again? hope you enjoy the 20 min!";
+
+  const member =
+    await message.guild.members
+      .fetch(userId)
+      .catch(() => null);
+
+  if (member) {
+    const botMember =
+      message.guild.members.me;
+
+    const canTimeout =
+      botMember &&
+      botMember.permissions.has(
+        PermissionFlagsBits.ModerateMembers
+      ) &&
+      member.moderatable;
+
+    if (canTimeout) {
+      await member
+        .timeout(
+          timeoutDuration,
+          "Anti-spam protection"
+        )
+        .catch(() => {});
+    }
+  }
+
+  saveAll();
+
+  spamTracker.set(
+    getSpamKey(
+      guildId,
+      userId
+    ),
+    []
+  );
+
+  await new Promise(
+    (resolve) =>
+      setTimeout(
+        resolve,
+        SPAM_RESPONSE_DELAY
+      )
+  );
+
+  await message.channel
+    .send(warning)
+    .catch(() => {});
+
+  removeSpamLock(
+    guildId,
+    userId
+  );
+
+  return true;
 }
 
 /* =========================
@@ -129,17 +568,24 @@ function getRank(guildId, userId) {
 const commands = [
   new SlashCommandBuilder()
     .setName("level")
-    .setDescription("Show your level and XP")
-    .addUserOption((option) =>
-      option
-        .setName("member")
-        .setDescription("Member to check")
-        .setRequired(false)
+    .setDescription(
+      "Show your level and XP"
+    )
+    .addUserOption(
+      (option) =>
+        option
+          .setName("member")
+          .setDescription(
+            "Member to check"
+          )
+          .setRequired(false)
     ),
 
   new SlashCommandBuilder()
     .setName("top-xp")
-    .setDescription("Show the top 100 members by XP"),
+    .setDescription(
+      "Show the top 100 members by XP"
+    ),
 
   new SlashCommandBuilder()
     .setName("xp-annc")
@@ -149,56 +595,102 @@ const commands = [
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
     )
-    .addStringOption((option) =>
-      option
-        .setName("type")
-        .setDescription("Announcement type")
-        .setRequired(true)
-        .addChoices(
-          {
-            name: "Daily",
-            value: "daily",
-          },
-          {
-            name: "Weekly",
-            value: "weekly",
-          },
-          {
-            name: "Off",
-            value: "off",
-          }
-        )
+    .addStringOption(
+      (option) =>
+        option
+          .setName("type")
+          .setDescription(
+            "Announcement type"
+          )
+          .setRequired(true)
+          .addChoices(
+            {
+              name: "Daily",
+              value: "daily",
+            },
+            {
+              name: "Weekly",
+              value: "weekly",
+            },
+            {
+              name: "Off",
+              value: "off",
+            }
+          )
     )
-    .addChannelOption((option) =>
-      option
-        .setName("channel")
-        .setDescription(
-          "Channel where the announcement will be sent"
-        )
-        .setRequired(false)
+    .addChannelOption(
+      (option) =>
+        option
+          .setName("channel")
+          .setDescription(
+            "Channel where the announcement will be sent"
+          )
+          .setRequired(false)
     ),
-].map((command) => command.toJSON());
+
+  new SlashCommandBuilder()
+    .setName("xp-exclude")
+    .setDescription(
+      "Configure a channel where messages do not give XP"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    )
+    .addStringOption(
+      (option) =>
+        option
+          .setName("action")
+          .setDescription(
+            "Enable or disable XP exclusion"
+          )
+          .setRequired(true)
+          .addChoices(
+            {
+              name: "Set Channel",
+              value: "set",
+            },
+            {
+              name: "Off",
+              value: "off",
+            }
+          )
+    )
+    .addChannelOption(
+      (option) =>
+        option
+          .setName("channel")
+          .setDescription(
+            "Channel where XP should not be given"
+          )
+          .setRequired(false)
+    ),
+].map(
+  (command) =>
+    command.toJSON()
+);
 
 /* =========================
    CLIENT
 ========================= */
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-});
+const client =
+  new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+    ],
+  });
 
 /* =========================
    REGISTER COMMANDS
 ========================= */
 
 async function registerCommands() {
-  const rest = new REST({
-    version: "10",
-  }).setToken(TOKEN);
+  const rest =
+    new REST({
+      version: "10",
+    }).setToken(TOKEN);
 
   if (GUILD_ID) {
     await rest.put(
@@ -216,7 +708,9 @@ async function registerCommands() {
     );
   } else {
     await rest.put(
-      Routes.applicationCommands(CLIENT_ID),
+      Routes.applicationCommands(
+        CLIENT_ID
+      ),
       {
         body: commands,
       }
@@ -257,23 +751,65 @@ client.once(
 client.on(
   Events.MessageCreate,
   async (message) => {
-    if (!message.guild) return;
-    if (message.author.bot) return;
-    if (!message.content) return;
+    if (!message.guild) {
+      return;
+    }
 
-    const user = getUser(
-      message.guild.id,
-      message.author.id
-    );
+    if (message.author.bot) {
+      return;
+    }
 
-    const oldLevel = user.level;
+    if (!message.content) {
+      return;
+    }
 
-    const words = message.content
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
+    /*
+      Anti-spam runs before XP.
+      Spam messages never receive XP.
+    */
 
-    if (!words.length) return;
+    const wasSpam =
+      await handleSpam(
+        message
+      );
+
+    if (wasSpam) {
+      return;
+    }
+
+    /*
+      Excluded XP channel:
+      Messages still work normally,
+      but they do not give XP or message count.
+    */
+
+    if (
+      isXpExcluded(
+        message.guild.id,
+        message.channel.id
+      )
+    ) {
+      return;
+    }
+
+    const user =
+      getUser(
+        message.guild.id,
+        message.author.id
+      );
+
+    const oldLevel =
+      user.level;
+
+    const words =
+      message.content
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+
+    if (!words.length) {
+      return;
+    }
 
     /*
       Normal XP:
@@ -281,22 +817,31 @@ client.on(
     */
 
     let xpPerWord =
-      Math.floor(Math.random() * 10) + 1;
+      Math.floor(
+        Math.random() * 10
+      ) + 1;
 
     /*
       13% chance:
       Each word gives a random amount from 11 to 99 XP.
     */
 
-    if (Math.random() < 0.13) {
+    if (
+      Math.random() < 0.13
+    ) {
       xpPerWord =
-        Math.floor(Math.random() * 89) + 11;
+        Math.floor(
+          Math.random() * 89
+        ) + 11;
     }
 
     const earnedXP =
-      words.length * xpPerWord;
+      words.length *
+      xpPerWord;
 
-    user.xp += earnedXP;
+    user.xp +=
+      earnedXP;
+
     user.messages += 1;
 
     /*
@@ -311,20 +856,31 @@ client.on(
       const nextLevel =
         Math.max(
           oldLevel + 1,
-          calculateLevel(user.xp)
+          calculateLevel(
+            user.xp
+          )
         );
 
-      user.level = nextLevel;
+      user.level =
+        nextLevel;
 
       const requiredXP =
-        xpForLevel(nextLevel);
+        xpForLevel(
+          nextLevel
+        );
 
-      if (user.xp < requiredXP) {
-        user.xp = requiredXP;
+      if (
+        user.xp <
+        requiredXP
+      ) {
+        user.xp =
+          requiredXP;
       }
     } else {
       user.level =
-        calculateLevel(user.xp);
+        calculateLevel(
+          user.xp
+        );
     }
 
     saveAll();
@@ -333,22 +889,33 @@ client.on(
        LEVEL UP
     ========================= */
 
-    if (user.level > oldLevel) {
+    if (
+      user.level >
+      oldLevel
+    ) {
       const currentLevelXP =
-        xpForLevel(user.level);
+        xpForLevel(
+          user.level
+        );
 
       const nextLevelXP =
-        xpForLevel(user.level + 1);
+        xpForLevel(
+          user.level + 1
+        );
 
       const currentXP =
-        user.xp - currentLevelXP;
+        user.xp -
+        currentLevelXP;
 
       const neededXP =
-        nextLevelXP - currentLevelXP;
+        nextLevelXP -
+        currentLevelXP;
 
       const embed =
         new EmbedBuilder()
-          .setColor(0x81c1eb)
+          .setColor(
+            0x81c1eb
+          )
           .setTitle(
             "you have levelled up! keep it up for a cookie 🍪!"
           )
@@ -375,7 +942,9 @@ client.on(
 
       await message.channel
         .send({
-          embeds: [embed],
+          embeds: [
+            embed,
+          ],
         })
         .catch(() => {});
     }
@@ -386,14 +955,21 @@ client.on(
    TOP XP
 ========================= */
 
-function getTopXP(guildId) {
+function getTopXP(
+  guildId
+) {
   return Object.entries(
     levels[guildId] || {}
   )
     .sort(
-      (a, b) => b[1].xp - a[1].xp
+      (a, b) =>
+        b[1].xp -
+        a[1].xp
     )
-    .slice(0, 100);
+    .slice(
+      0,
+      100
+    );
 }
 
 /* =========================
@@ -405,24 +981,36 @@ async function buildAnnouncement(
   type,
   page = 0
 ) {
-  const top = getTopXP(guildId);
+  const top =
+    getTopXP(
+      guildId
+    );
 
-  const totalPages = Math.max(
-    1,
-    Math.ceil(top.length / 10)
-  );
+  const totalPages =
+    Math.max(
+      1,
+      Math.ceil(
+        top.length / 10
+      )
+    );
 
-  const safePage = Math.max(
-    0,
-    Math.min(page, totalPages - 1)
-  );
+  const safePage =
+    Math.max(
+      0,
+      Math.min(
+        page,
+        totalPages - 1
+      )
+    );
 
-  const start = safePage * 10;
+  const start =
+    safePage * 10;
 
-  const pageUsers = top.slice(
-    start,
-    start + 10
-  );
+  const pageUsers =
+    top.slice(
+      start,
+      start + 10
+    );
 
   const title =
     type === "daily"
@@ -442,7 +1030,9 @@ async function buildAnnouncement(
     ] = pageUsers[i];
 
     const guild =
-      client.guilds.cache.get(guildId);
+      client.guilds.cache.get(
+        guildId
+      );
 
     const member =
       await guild?.members
@@ -461,13 +1051,19 @@ async function buildAnnouncement(
 
   const embed =
     new EmbedBuilder()
-      .setColor(0x00d4ff)
-      .setTitle(title)
+      .setColor(
+        0x00d4ff
+      )
+      .setTitle(
+        title
+      )
       .setDescription(
         `**Top 100 members with most XP**\n\n` +
         (
           rows.length
-            ? rows.join("\n")
+            ? rows.join(
+                "\n"
+              )
             : "No XP data yet."
         )
       )
@@ -483,7 +1079,9 @@ async function buildAnnouncement(
           .setCustomId(
             `xp_prev_${guildId}_${type}`
           )
-          .setLabel("Previous")
+          .setLabel(
+            "Previous"
+          )
           .setStyle(
             ButtonStyle.Secondary
           )
@@ -495,7 +1093,9 @@ async function buildAnnouncement(
           .setCustomId(
             `xp_next_${guildId}_${type}`
           )
-          .setLabel("Next")
+          .setLabel(
+            "Next"
+          )
           .setStyle(
             ButtonStyle.Primary
           )
@@ -506,8 +1106,12 @@ async function buildAnnouncement(
       );
 
   return {
-    embeds: [embed],
-    components: [row],
+    embeds: [
+      embed,
+    ],
+    components: [
+      row,
+    ],
   };
 }
 
@@ -515,20 +1119,38 @@ async function buildAnnouncement(
    SEND ANNOUNCEMENT
 ========================= */
 
-async function sendAnnouncement(type) {
+async function sendAnnouncement(
+  type
+) {
   for (
     const [
       guildId,
       config,
-    ] of Object.entries(announcements)
+    ] of Object.entries(
+      announcements
+    )
   ) {
-    if (config.type !== type) continue;
-    if (!config.channelId) continue;
+    if (
+      config.type !==
+      type
+    ) {
+      continue;
+    }
+
+    if (
+      !config.channelId
+    ) {
+      continue;
+    }
 
     const guild =
-      client.guilds.cache.get(guildId);
+      client.guilds.cache.get(
+        guildId
+      );
 
-    if (!guild) continue;
+    if (!guild) {
+      continue;
+    }
 
     const channel =
       guild.channels.cache.get(
@@ -550,7 +1172,9 @@ async function sendAnnouncement(type) {
       );
 
     await channel
-      .send(announcement)
+      .send(
+        announcement
+      )
       .catch(() => {});
   }
 }
@@ -564,20 +1188,27 @@ let lastWeekly = "";
 
 setInterval(
   async () => {
-    const now = new Date();
+    const now =
+      new Date();
 
     const dateKey =
-      now.toISOString().slice(0, 10);
+      now
+        .toISOString()
+        .slice(0, 10);
 
     const weekKey =
       `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}`;
 
     if (
-      now.getUTCHours() === 0 &&
-      now.getUTCMinutes() === 0 &&
-      lastDaily !== dateKey
+      now.getUTCHours() ===
+        0 &&
+      now.getUTCMinutes() ===
+        0 &&
+      lastDaily !==
+        dateKey
     ) {
-      lastDaily = dateKey;
+      lastDaily =
+        dateKey;
 
       await sendAnnouncement(
         "daily"
@@ -585,12 +1216,17 @@ setInterval(
     }
 
     if (
-      now.getUTCDay() === 1 &&
-      now.getUTCHours() === 0 &&
-      now.getUTCMinutes() === 0 &&
-      lastWeekly !== weekKey
+      now.getUTCDay() ===
+        1 &&
+      now.getUTCHours() ===
+        0 &&
+      now.getUTCMinutes() ===
+        0 &&
+      lastWeekly !==
+        weekKey
     ) {
-      lastWeekly = weekKey;
+      lastWeekly =
+        weekKey;
 
       await sendAnnouncement(
         "weekly"
@@ -608,26 +1244,44 @@ client.on(
   Events.InteractionCreate,
   async (interaction) => {
 
+    if (!interaction.guild) {
+      return;
+    }
+
+    const guildId =
+      interaction.guild.id;
+
     /* =========================
        BUTTONS
     ========================= */
 
-    if (interaction.isButton()) {
+    if (
+      interaction.isButton()
+    ) {
       const parts =
-        interaction.customId.split("_");
+        interaction.customId.split(
+          "_"
+        );
 
-      if (parts[0] !== "xp") {
+      if (
+        parts[0] !==
+        "xp"
+      ) {
         return;
       }
 
-      const direction = parts[1];
-      const guildIdFromButton = parts[2];
-      const type = parts[3];
+      const direction =
+        parts[1];
+
+      const guildIdFromButton =
+        parts[2];
+
+      const type =
+        parts[3];
 
       if (
-        !interaction.guild ||
         guildIdFromButton !==
-          interaction.guild.id
+        guildId
       ) {
         return;
       }
@@ -645,18 +1299,25 @@ client.on(
 
       const currentPage =
         pageMatch
-          ? Number(pageMatch[1]) - 1
+          ? Number(
+              pageMatch[1]
+            ) - 1
           : 0;
 
       const totalPages =
         pageMatch
-          ? Number(pageMatch[2])
+          ? Number(
+              pageMatch[2]
+            )
           : 1;
 
       let newPage =
         currentPage;
 
-      if (direction === "next") {
+      if (
+        direction ===
+        "next"
+      ) {
         newPage =
           Math.min(
             currentPage + 1,
@@ -664,7 +1325,10 @@ client.on(
           );
       }
 
-      if (direction === "prev") {
+      if (
+        direction ===
+        "prev"
+      ) {
         newPage =
           Math.max(
             currentPage - 1,
@@ -680,7 +1344,9 @@ client.on(
         );
 
       await interaction
-        .update(updated)
+        .update(
+          updated
+        )
         .catch(() => {});
 
       return;
@@ -696,12 +1362,45 @@ client.on(
       return;
     }
 
-    if (!interaction.guild) {
+    /* =========================
+       COMMAND COOLDOWN
+    ========================= */
+
+    if (
+      isCommandOnCooldown(
+        interaction.user.id,
+        guildId
+      )
+    ) {
+      const remaining =
+        getRemainingCooldown(
+          interaction.user.id,
+          guildId
+        );
+
+      const seconds =
+        Math.max(
+          1,
+          Math.ceil(
+            remaining / 1000
+          )
+        );
+
+      await interaction
+        .reply({
+          content:
+            `Please wait ${seconds}s before using another command.`,
+          ephemeral: true,
+        })
+        .catch(() => {});
+
       return;
     }
 
-    const guildId =
-      interaction.guild.id;
+    setCommandCooldown(
+      interaction.user.id,
+      guildId
+    );
 
     /* =========================
        /LEVEL
@@ -714,12 +1413,17 @@ client.on(
       const target =
         interaction.options.getUser(
           "member"
-        ) || interaction.user;
+        ) ||
+        interaction.user;
 
       const member =
         await interaction.guild.members
-          .fetch(target.id)
-          .catch(() => null);
+          .fetch(
+            target.id
+          )
+          .catch(
+            () => null
+          );
 
       const displayName =
         member?.displayName ||
@@ -738,7 +1442,9 @@ client.on(
         );
 
       const currentLevelXP =
-        xpForLevel(user.level);
+        xpForLevel(
+          user.level
+        );
 
       const nextLevelXP =
         xpForLevel(
@@ -755,7 +1461,9 @@ client.on(
 
       const embed =
         new EmbedBuilder()
-          .setColor(0x00d4ff)
+          .setColor(
+            0x00d4ff
+          )
           .setAuthor({
             name:
               `${displayName}'s information`,
@@ -804,9 +1512,13 @@ client.on(
               "Keep it up to claim higher ranks and get more cookies! 🍪",
           });
 
-      await interaction.reply({
-        embeds: [embed],
-      });
+      await interaction
+        .reply({
+          embeds: [
+            embed,
+          ],
+        })
+        .catch(() => {});
 
       return;
     }
@@ -819,27 +1531,18 @@ client.on(
       interaction.commandName ===
       "top-xp"
     ) {
-      const top =
-        getTopXP(guildId);
-
-      const totalPages =
-        Math.max(
-          1,
-          Math.ceil(top.length / 10)
-        );
-
-      const page = 0;
-
       const announcement =
         await buildAnnouncement(
           guildId,
           "daily",
-          page
+          0
         );
 
-      await interaction.reply(
-        announcement
-      );
+      await interaction
+        .reply(
+          announcement
+        )
+        .catch(() => {});
 
       return;
     }
@@ -863,18 +1566,23 @@ client.on(
           "channel"
         );
 
-      if (type === "off") {
+      if (
+        type ===
+        "off"
+      ) {
         delete announcements[
           guildId
         ];
 
         saveAll();
 
-        await interaction.reply({
-          content:
-            "XP announcements are now disabled.",
-          ephemeral: true,
-        });
+        await interaction
+          .reply({
+            content:
+              "XP announcements are now disabled.",
+            ephemeral: true,
+          })
+          .catch(() => {});
 
         return;
       }
@@ -883,28 +1591,119 @@ client.on(
         !channel ||
         !channel.isTextBased()
       ) {
-        await interaction.reply({
-          content:
-            "Please select a text channel.",
-          ephemeral: true,
-        });
+        await interaction
+          .reply({
+            content:
+              "Please select a text channel.",
+            ephemeral: true,
+          })
+          .catch(() => {});
 
         return;
       }
 
-      announcements[guildId] = {
+      announcements[
+        guildId
+      ] = {
         type,
-        channelId: channel.id,
+        channelId:
+          channel.id,
       };
 
       saveAll();
 
-      await interaction.reply({
-        content:
-          `${type === "daily" ? "Daily" : "Weekly"} ` +
-          `XP announcements are now enabled in ${channel}.`,
-        ephemeral: true,
-      });
+      await interaction
+        .reply({
+          content:
+            `${type === "daily" ? "Daily" : "Weekly"} XP announcements are now enabled in ${channel}.`,
+          ephemeral: true,
+        })
+        .catch(() => {});
+
+      return;
+    }
+
+    /* =========================
+       /XP-EXCLUDE
+    ========================= */
+
+    if (
+      interaction.commandName ===
+      "xp-exclude"
+    ) {
+      const action =
+        interaction.options.getString(
+          "action",
+          true
+        );
+
+      const channel =
+        interaction.options.getChannel(
+          "channel"
+        );
+
+      if (
+        action ===
+        "off"
+      ) {
+        if (
+          settings.excludedXpChannels
+        ) {
+          delete settings
+            .excludedXpChannels[
+              guildId
+            ];
+        }
+
+        saveAll();
+
+        await interaction
+          .reply({
+            content:
+              "XP exclusion is now disabled.",
+            ephemeral: true,
+          })
+          .catch(() => {});
+
+        return;
+      }
+
+      if (
+        !channel ||
+        !channel.isTextBased()
+      ) {
+        await interaction
+          .reply({
+            content:
+              "Please select a text channel.",
+            ephemeral: true,
+          })
+          .catch(() => {});
+
+        return;
+      }
+
+      if (
+        !settings.excludedXpChannels
+      ) {
+        settings.excludedXpChannels =
+          {};
+      }
+
+      settings
+        .excludedXpChannels[
+          guildId
+        ] = channel.id;
+
+      saveAll();
+
+      await interaction
+        .reply({
+          content:
+            `XP is now disabled in ${channel}.`,
+          ephemeral: true,
+        })
+        .catch(() => {});
 
       return;
     }
