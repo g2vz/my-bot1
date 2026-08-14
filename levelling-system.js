@@ -16,31 +16,55 @@ const {
 const {
   joinVoiceChannel,
   getVoiceConnection,
-  VoiceConnectionStatus,
-  entersState,
 } = require("@discordjs/voice");
 
 const fs = require("node:fs");
 const path = require("node:path");
 
 /* =========================================================
-   ENV
+   ENVIRONMENT
 ========================================================= */
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 
+const AFK_VOICE_CHANNEL_ID =
+  process.env.AFK_VOICE_CHANNEL_ID || "";
+
 if (!TOKEN || !CLIENT_ID) {
-  console.error("Missing DISCORD_TOKEN or CLIENT_ID.");
+  console.error(
+    "Missing DISCORD_TOKEN or CLIENT_ID."
+  );
+
   process.exit(1);
 }
+
+/* =========================================================
+   SETTINGS
+========================================================= */
+
+const SPAM_MESSAGE_LIMIT = 5;
+const SPAM_WINDOW_MS = 3000;
+
+const FIRST_SPAM_TIMEOUT_MS =
+  5 * 60 * 1000;
+
+const SECOND_SPAM_TIMEOUT_MS =
+  20 * 60 * 1000;
+
+const SPAM_ACTION_DELAY_MS = 2000;
+
+const COMMAND_COOLDOWN_MS = 2000;
 
 /* =========================================================
    DATA
 ========================================================= */
 
-const DATA_DIR = path.join(__dirname, "..", "data");
+const DATA_DIR = path.join(
+  __dirname,
+  "data"
+);
 
 const LEVELS_FILE = path.join(
   DATA_DIR,
@@ -57,16 +81,35 @@ const SETTINGS_FILE = path.join(
   "settings.json"
 );
 
-fs.mkdirSync(DATA_DIR, {
-  recursive: true,
-});
+fs.mkdirSync(
+  DATA_DIR,
+  {
+    recursive: true,
+  }
+);
+
+/* =========================================================
+   FILE HELPERS
+========================================================= */
 
 function load(file, fallback) {
   try {
+    if (!fs.existsSync(file)) {
+      return fallback;
+    }
+
     return JSON.parse(
-      fs.readFileSync(file, "utf8")
+      fs.readFileSync(
+        file,
+        "utf8"
+      )
     );
-  } catch {
+  } catch (error) {
+    console.error(
+      `Failed to load ${file}:`,
+      error
+    );
+
     return fallback;
   }
 }
@@ -75,7 +118,11 @@ function save(file, data) {
   try {
     fs.writeFileSync(
       file,
-      JSON.stringify(data, null, 2)
+      JSON.stringify(
+        data,
+        null,
+        2
+      )
     );
   } catch (error) {
     console.error(
@@ -118,55 +165,17 @@ function saveAll() {
 }
 
 /* =========================================================
-   DEFAULT GUILD SETTINGS
+   SERVER SETTINGS
 ========================================================= */
 
 function getGuildSettings(guildId) {
   if (!settings[guildId]) {
     settings[guildId] = {
       spamEnabled: true,
-
-      spamExcludedChannels: [],
-
-      levelUpChannelId: null,
-
-      afkVoiceChannelId: null,
-
-      spamHistory: {},
-
-      spamPunishments: {},
+      spamExemptChannelId: null,
+      xpExemptChannelId: null,
+      levelChannelId: null,
     };
-  }
-
-  if (
-    typeof settings[guildId].spamEnabled !==
-    "boolean"
-  ) {
-    settings[guildId].spamEnabled = true;
-  }
-
-  if (
-    !Array.isArray(
-      settings[guildId]
-        .spamExcludedChannels
-    )
-  ) {
-    settings[guildId]
-      .spamExcludedChannels = [];
-  }
-
-  if (
-    !settings[guildId].spamHistory
-  ) {
-    settings[guildId].spamHistory = {};
-  }
-
-  if (
-    !settings[guildId]
-      .spamPunishments
-  ) {
-    settings[guildId]
-      .spamPunishments = {};
   }
 
   return settings[guildId];
@@ -195,17 +204,17 @@ function getUser(
   return levels[guildId][userId];
 }
 
-/*
-  Level 0 = 0 XP
-  Level 1 = 100 XP
-  Level 2 = 282 XP
-  Level 3 = 519 XP
-  etc.
-*/
+/* =========================================================
+   XP CURVE
+========================================================= */
 
 function xpForLevel(level) {
   return Math.floor(
-    100 * Math.pow(level, 1.5)
+    100 *
+      Math.pow(
+        level,
+        1.5
+      )
   );
 }
 
@@ -214,13 +223,19 @@ function calculateLevel(xp) {
 
   while (
     xp >=
-    xpForLevel(level + 1)
+    xpForLevel(
+      level + 1
+    )
   ) {
     level++;
   }
 
   return level;
 }
+
+/* =========================================================
+   PROGRESS BAR
+========================================================= */
 
 function progressBar(
   current,
@@ -240,17 +255,24 @@ function progressBar(
       )
     );
 
-  const filled = Math.floor(
-    percentage * size
-  );
+  const filled =
+    Math.floor(
+      percentage * size
+    );
 
   return (
-    "█".repeat(filled) +
+    "█".repeat(
+      filled
+    ) +
     "░".repeat(
       size - filled
     )
   );
 }
+
+/* =========================================================
+   RANK
+========================================================= */
 
 function getRank(
   guildId,
@@ -263,7 +285,8 @@ function getRank(
 
   users.sort(
     (a, b) =>
-      b[1].xp - a[1].xp
+      b[1].xp -
+      a[1].xp
   );
 
   const index =
@@ -278,79 +301,89 @@ function getRank(
 }
 
 /* =========================================================
+   TOP XP
+========================================================= */
+
+function getTopXP(
+  guildId
+) {
+  return Object.entries(
+    levels[guildId] || {}
+  )
+    .sort(
+      (a, b) =>
+        b[1].xp -
+        a[1].xp
+    )
+    .slice(
+      0,
+      100
+    );
+}
+
+/* =========================================================
+   SPAM MEMORY
+========================================================= */
+
+const spamTracker =
+  new Map();
+
+const spamActionLock =
+  new Map();
+
+const spamStrikes =
+  new Map();
+
+/* =========================================================
    COMMAND COOLDOWN
 ========================================================= */
 
 const commandCooldowns =
   new Map();
 
-const DEFAULT_COMMAND_COOLDOWN =
-  2000;
-
-const COMMAND_COOLDOWNS = {
-  level: 2000,
-  "top-xp": 2000,
-  "xp-annc": 2000,
-  "spam-control": 2000,
-  "spam-channel": 2000,
-  "level-channel": 2000,
-  "afk-voice": 3000,
-};
-
 /*
-  لاحقًا إذا أردت استثناء أمر من الـ cooldown
-  نضعه هنا بقيمة 0.
+  لاحقاً إذا أردت استثناء كوماندات معينة
+  من الـ cooldown، ضع أسماءها هنا.
+
+  مثال:
+  "level"
 */
 
-function getCommandCooldown(
-  commandName
-) {
-  if (
-    Object.prototype.hasOwnProperty.call(
-      COMMAND_COOLDOWNS,
-      commandName
-    )
-  ) {
-    return COMMAND_COOLDOWNS[
-      commandName
-    ];
-  }
+const COMMANDS_WITHOUT_COOLDOWN =
+  new Set([]);
 
-  return DEFAULT_COMMAND_COOLDOWN;
-}
+/* =========================================================
+   COMMAND COOLDOWN CHECK
+========================================================= */
 
-function isCommandOnCooldown(
+function checkCommandCooldown(
   interaction
 ) {
-  const cooldown =
-    getCommandCooldown(
+  if (
+    COMMANDS_WITHOUT_COOLDOWN.has(
       interaction.commandName
-    );
-
-  if (cooldown <= 0) {
-    return {
-      onCooldown: false,
-      remaining: 0,
-    };
+    )
+  ) {
+    return 0;
   }
 
   const key =
-    `${interaction.guildId}:${interaction.user.id}:${interaction.commandName}`;
+    `${interaction.guild.id}:${interaction.user.id}:${interaction.commandName}`;
 
-  const now = Date.now();
+  const now =
+    Date.now();
 
-  const lastUsed =
-    commandCooldowns.get(key) || 0;
+  const last =
+    commandCooldowns.get(
+      key
+    ) || 0;
 
   const remaining =
-    cooldown -
-    (now - lastUsed);
+    COMMAND_COOLDOWN_MS -
+    (now - last);
 
   if (remaining > 0) {
-    return {
-      onCooldown: true,
-      remaining,
-    };
+    return remaining;
   }
 
   commandCooldowns.set(
@@ -358,10 +391,352 @@ function isCommandOnCooldown(
     now
   );
 
-  return {
-    onCooldown: false,
-    remaining: 0,
-  };
+  return 0;
+}
+
+/* =========================================================
+   SPAM HELPERS
+========================================================= */
+
+function getSpamKey(
+  guildId,
+  userId
+) {
+  return `${guildId}:${userId}`;
+}
+
+function isModerator(
+  member
+) {
+  if (!member) {
+    return false;
+  }
+
+  return (
+    member.permissions.has(
+      PermissionFlagsBits.ModerateMembers
+    ) ||
+    member.permissions.has(
+      PermissionFlagsBits.ManageGuild
+    ) ||
+    member.permissions.has(
+      PermissionFlagsBits.Administrator
+    )
+  );
+}
+
+function clearSpamTracker(
+  key
+) {
+  spamTracker.delete(
+    key
+  );
+}
+
+function isSpamLocked(
+  key
+) {
+  const lock =
+    spamActionLock.get(
+      key
+    );
+
+  if (!lock) {
+    return false;
+  }
+
+  if (
+    Date.now() >= lock
+  ) {
+    spamActionLock.delete(
+      key
+    );
+
+    return false;
+  }
+
+  return true;
+}
+
+/* =========================================================
+   SPAM DETECTION
+========================================================= */
+
+function registerSpamMessage(
+  guildId,
+  userId
+) {
+  const key =
+    getSpamKey(
+      guildId,
+      userId
+    );
+
+  const now =
+    Date.now();
+
+  let timestamps =
+    spamTracker.get(
+      key
+    ) || [];
+
+  timestamps =
+    timestamps.filter(
+      (timestamp) =>
+        now - timestamp <=
+        SPAM_WINDOW_MS
+    );
+
+  timestamps.push(
+    now
+  );
+
+  spamTracker.set(
+    key,
+    timestamps
+  );
+
+  return timestamps.length;
+}
+
+/* =========================================================
+   SPAM TIMEOUT
+========================================================= */
+
+async function handleSpam(
+  message
+) {
+  if (!message.guild) {
+    return false;
+  }
+
+  if (
+    !message.member
+  ) {
+    return false;
+  }
+
+  const guildSettings =
+    getGuildSettings(
+      message.guild.id
+    );
+
+  if (
+    !guildSettings.spamEnabled
+  ) {
+    return false;
+  }
+
+  if (
+    guildSettings.spamExemptChannelId ===
+    message.channel.id
+  ) {
+    return false;
+  }
+
+  /*
+    Moderators and admins are completely
+    immune to the spam timeout.
+  */
+
+  if (
+    isModerator(
+      message.member
+    )
+  ) {
+    return false;
+  }
+
+  const key =
+    getSpamKey(
+      message.guild.id,
+      message.author.id
+    );
+
+  const count =
+    registerSpamMessage(
+      message.guild.id,
+      message.author.id
+    );
+
+  if (
+    count <=
+    SPAM_MESSAGE_LIMIT
+  ) {
+    return false;
+  }
+
+  /*
+    Prevent duplicate timeout actions
+    while Discord / bot is processing.
+  */
+
+  if (
+    isSpamLocked(key)
+  ) {
+    return true;
+  }
+
+  /*
+    Lock immediately for 2 seconds.
+  */
+
+  spamActionLock.set(
+    key,
+    Date.now() +
+      SPAM_ACTION_DELAY_MS
+  );
+
+  clearSpamTracker(
+    key
+  );
+
+  const previousStrike =
+    spamStrikes.get(
+      key
+    ) || 0;
+
+  const isSecondSpam =
+    previousStrike >= 1;
+
+  const timeoutDuration =
+    isSecondSpam
+      ? SECOND_SPAM_TIMEOUT_MS
+      : FIRST_SPAM_TIMEOUT_MS;
+
+  spamStrikes.set(
+    key,
+    previousStrike + 1
+  );
+
+  /*
+    Clear the strike after 30 minutes.
+    This prevents an old spam event from
+    permanently causing 20 minute timeouts.
+  */
+
+  setTimeout(
+    () => {
+      const current =
+        spamStrikes.get(
+          key
+        );
+
+      if (
+        current ===
+        previousStrike + 1
+      ) {
+        spamStrikes.delete(
+          key
+        );
+      }
+    },
+    30 * 60 * 1000
+  );
+
+  /*
+    Delay the action slightly so the bot
+    does not accidentally execute multiple
+    spam actions at once.
+  */
+
+  await new Promise(
+    (resolve) =>
+      setTimeout(
+        resolve,
+        SPAM_ACTION_DELAY_MS
+      )
+  );
+
+  /*
+    Make sure member still exists.
+  */
+
+  const member =
+    await message.guild.members
+      .fetch(
+        message.author.id
+      )
+      .catch(
+        () => null
+      );
+
+  if (!member) {
+    return true;
+  }
+
+  /*
+    Check moderator permissions again
+    after the delay.
+  */
+
+  if (
+    isModerator(member)
+  ) {
+    return true;
+  }
+
+  /*
+    Discord requires the bot to have
+    Moderate Members permission.
+  */
+
+  if (
+    !message.guild.members.me
+      ?.permissions.has(
+        PermissionFlagsBits.ModerateMembers
+      )
+  ) {
+    console.error(
+      "Bot does not have Moderate Members permission."
+    );
+
+    return true;
+  }
+
+  const reason =
+    isSecondSpam
+      ? "Spam protection - repeated spam"
+      : "Spam protection";
+
+  await member.timeout(
+    timeoutDuration,
+    reason
+  ).catch(
+    (error) => {
+      console.error(
+        "Failed to timeout spammer:",
+        error
+      );
+    }
+  );
+
+  /*
+    Send the requested message
+    in the exact channel where spam happened.
+  */
+
+  if (
+    isSecondSpam
+  ) {
+    await message.channel
+      .send(
+        "again? hope you enjoy the 20 min!"
+      )
+      .catch(
+        () => {}
+      );
+  } else {
+    await message.channel
+      .send(
+        "oops! seems like you send a lot of messages in a short time👀"
+      )
+      .catch(
+        () => {}
+      );
+  }
+
+  return true;
 }
 
 /* =========================================================
@@ -369,10 +744,9 @@ function isCommandOnCooldown(
 ========================================================= */
 
 const commands = [
-
-  /* =========================
-     LEVEL
-  ========================= */
+  /* =======================================================
+     /level
+  ======================================================= */
 
   new SlashCommandBuilder()
     .setName("level")
@@ -389,9 +763,9 @@ const commands = [
           .setRequired(false)
     ),
 
-  /* =========================
-     TOP XP
-  ========================= */
+  /* =======================================================
+     /top-xp
+  ======================================================= */
 
   new SlashCommandBuilder()
     .setName("top-xp")
@@ -399,9 +773,9 @@ const commands = [
       "Show the top 100 members by XP"
     ),
 
-  /* =========================
-     XP ANNOUNCEMENT
-  ========================= */
+  /* =======================================================
+     /xp-annc
+  ======================================================= */
 
   new SlashCommandBuilder()
     .setName("xp-annc")
@@ -439,22 +813,23 @@ const commands = [
         option
           .setName("channel")
           .setDescription(
-            "Channel where the announcement will be sent"
-          )
-          .addChannelTypes(
-            ChannelType.GuildText
+            "Channel where announcement will be sent"
           )
           .setRequired(false)
+          .addChannelTypes(
+            ChannelType.GuildText,
+            ChannelType.GuildAnnouncement
+          )
     ),
 
-  /* =========================
-     SPAM CONTROL
-  ========================= */
+  /* =======================================================
+     /spam
+  ======================================================= */
 
   new SlashCommandBuilder()
-    .setName("spam-control")
+    .setName("spam")
     .setDescription(
-      "Turn anti-spam protection on or off"
+      "Enable or disable anti-spam protection"
     )
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
@@ -462,9 +837,9 @@ const commands = [
     .addStringOption(
       (option) =>
         option
-          .setName("status")
+          .setName("mode")
           .setDescription(
-            "Enable or disable anti-spam"
+            "Turn anti-spam on or off"
           )
           .setRequired(true)
           .addChoices(
@@ -479,14 +854,14 @@ const commands = [
           )
     ),
 
-  /* =========================
-     SPAM EXCLUDED CHANNEL
-  ========================= */
+  /* =======================================================
+     /spam-exempt
+  ======================================================= */
 
   new SlashCommandBuilder()
-    .setName("spam-channel")
+    .setName("spam-exempt")
     .setDescription(
-      "Configure a channel where anti-spam is ignored"
+      "Set the channel where anti-spam timeouts are disabled"
     )
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
@@ -494,57 +869,9 @@ const commands = [
     .addStringOption(
       (option) =>
         option
-          .setName("action")
+          .setName("mode")
           .setDescription(
-            "Add, remove, or clear excluded channels"
-          )
-          .setRequired(true)
-          .addChoices(
-            {
-              name: "Add",
-              value: "add",
-            },
-            {
-              name: "Remove",
-              value: "remove",
-            },
-            {
-              name: "Clear All",
-              value: "clear",
-            }
-          )
-    )
-    .addChannelOption(
-      (option) =>
-        option
-          .setName("channel")
-          .setDescription(
-            "Channel to add/remove"
-          )
-          .addChannelTypes(
-            ChannelType.GuildText
-          )
-          .setRequired(false)
-    ),
-
-  /* =========================
-     LEVEL UP CHANNEL
-  ========================= */
-
-  new SlashCommandBuilder()
-    .setName("level-channel")
-    .setDescription(
-      "Set the channel for level-up messages"
-    )
-    .setDefaultMemberPermissions(
-      PermissionFlagsBits.ManageGuild
-    )
-    .addStringOption(
-      (option) =>
-        option
-          .setName("action")
-          .setDescription(
-            "Set or disable the level-up channel"
+            "Enable or disable the exempt channel"
           )
           .setRequired(true)
           .addChoices(
@@ -563,22 +890,23 @@ const commands = [
         option
           .setName("channel")
           .setDescription(
-            "Channel for level-up messages"
-          )
-          .addChannelTypes(
-            ChannelType.GuildText
+            "Channel to exempt from spam timeouts"
           )
           .setRequired(false)
+          .addChannelTypes(
+            ChannelType.GuildText,
+            ChannelType.GuildAnnouncement
+          )
     ),
 
-  /* =========================
-     AFK VOICE
-  ========================= */
+  /* =======================================================
+     /xp-exempt
+  ======================================================= */
 
   new SlashCommandBuilder()
-    .setName("afk-voice")
+    .setName("xp-exempt")
     .setDescription(
-      "Configure the 24/7 AFK voice channel"
+      "Set a channel where messages do not give XP"
     )
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
@@ -586,18 +914,18 @@ const commands = [
     .addStringOption(
       (option) =>
         option
-          .setName("action")
+          .setName("mode")
           .setDescription(
-            "Join or leave the AFK voice channel"
+            "Set or disable XP exempt channel"
           )
           .setRequired(true)
           .addChoices(
             {
-              name: "Set / Join",
+              name: "Set",
               value: "set",
             },
             {
-              name: "Off / Leave",
+              name: "Off",
               value: "off",
             }
           )
@@ -607,15 +935,59 @@ const commands = [
         option
           .setName("channel")
           .setDescription(
-            "Voice channel to stay in 24/7"
-          )
-          .addChannelTypes(
-            ChannelType.GuildVoice,
-            ChannelType.GuildStageVoice
+            "Channel where XP is disabled"
           )
           .setRequired(false)
+          .addChannelTypes(
+            ChannelType.GuildText,
+            ChannelType.GuildAnnouncement
+          )
     ),
 
+  /* =======================================================
+     /level-channel
+  ======================================================= */
+
+  new SlashCommandBuilder()
+    .setName("level-channel")
+    .setDescription(
+      "Set the channel where level-up messages are sent"
+    )
+    .setDefaultMemberPermissions(
+      PermissionFlagsBits.ManageGuild
+    )
+    .addStringOption(
+      (option) =>
+        option
+          .setName("mode")
+          .setDescription(
+            "Set or disable level-up channel"
+          )
+          .setRequired(true)
+          .addChoices(
+            {
+              name: "Set",
+              value: "set",
+            },
+            {
+              name: "Off",
+              value: "off",
+            }
+          )
+    )
+    .addChannelOption(
+      (option) =>
+        option
+          .setName("channel")
+          .setDescription(
+            "Channel where level-ups are announced"
+          )
+          .setRequired(false)
+          .addChannelTypes(
+            ChannelType.GuildText,
+            ChannelType.GuildAnnouncement
+          )
+    ),
 ].map(
   (command) =>
     command.toJSON()
@@ -631,6 +1003,7 @@ const client =
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.MessageContent,
+      GatewayIntentBits.GuildMembers,
       GatewayIntentBits.GuildVoiceStates,
     ],
   });
@@ -643,7 +1016,9 @@ async function registerCommands() {
   const rest =
     new REST({
       version: "10",
-    }).setToken(TOKEN);
+    }).setToken(
+      TOKEN
+    );
 
   if (GUILD_ID) {
     await rest.put(
@@ -679,186 +1054,99 @@ async function registerCommands() {
    AFK VOICE 24/7
 ========================================================= */
 
-const afkReconnectTimers =
-  new Map();
+async function joinAFKVoice() {
+  if (
+    !AFK_VOICE_CHANNEL_ID
+  ) {
+    console.log(
+      "AFK_VOICE_CHANNEL_ID is not configured."
+    );
 
-async function joinAfkVoice(
-  guild,
-  channelId
-) {
+    return;
+  }
+
   const channel =
-    guild.channels.cache.get(
-      channelId
+    client.channels.cache.get(
+      AFK_VOICE_CHANNEL_ID
     );
 
   if (
-    !channel ||
-    !channel.isVoiceBased()
+    !channel
   ) {
     console.error(
-      `AFK voice channel not found for guild ${guild.id}`
+      "AFK voice channel was not found."
     );
 
-    return false;
+    return;
+  }
+
+  if (
+    channel.type !==
+    ChannelType.GuildVoice
+  ) {
+    console.error(
+      "AFK_VOICE_CHANNEL_ID is not a voice channel."
+    );
+
+    return;
   }
 
   try {
-    const oldConnection =
+    const existing =
       getVoiceConnection(
-        guild.id
+        channel.guild.id
       );
 
-    if (oldConnection) {
-      try {
-        oldConnection.destroy();
-      } catch {}
+    if (
+      existing
+    ) {
+      return;
     }
 
     const connection =
       joinVoiceChannel({
         channelId:
           channel.id,
-
         guildId:
-          guild.id,
-
+          channel.guild.id,
         adapterCreator:
-          guild.voiceAdapterCreator,
-
+          channel.guild
+            .voiceAdapterCreator,
         selfDeaf: true,
-
         selfMute: true,
       });
 
     connection.on(
-      VoiceConnectionStatus.Ready,
-      () => {
-        console.log(
-          `AFK voice connected: ${guild.name}`
+      "error",
+      (error) => {
+        console.error(
+          "AFK voice connection error:",
+          error
         );
       }
     );
 
     connection.on(
-      VoiceConnectionStatus.Disconnected,
-      async () => {
+      "stateChange",
+      (
+        oldState,
+        newState
+      ) => {
         console.log(
-          `AFK voice disconnected: ${guild.name}`
+          `AFK voice state: ${oldState.status} -> ${newState.status}`
         );
-
-        try {
-          await Promise.race([
-            entersState(
-              connection,
-              VoiceConnectionStatus.Signalling,
-              5000
-            ),
-
-            entersState(
-              connection,
-              VoiceConnectionStatus.Connecting,
-              5000
-            ),
-          ]);
-
-          console.log(
-            `AFK voice recovered: ${guild.name}`
-          );
-        } catch {
-          try {
-            connection.destroy();
-          } catch {}
-
-          scheduleAfkReconnect(
-            guild.id
-          );
-        }
       }
     );
 
-    connection.on(
-      VoiceConnectionStatus.Destroyed,
-      () => {
-        const config =
-          getGuildSettings(
-            guild.id
-          );
-
-        if (
-          config.afkVoiceChannelId
-        ) {
-          scheduleAfkReconnect(
-            guild.id
-          );
-        }
-      }
+    console.log(
+      `Joined AFK voice channel: ${channel.name}`
     );
-
-    return true;
   } catch (error) {
     console.error(
-      `Failed to join AFK voice in ${guild.name}:`,
+      "Failed to join AFK voice:",
       error
     );
-
-    scheduleAfkReconnect(
-      guild.id
-    );
-
-    return false;
   }
-}
-
-function scheduleAfkReconnect(
-  guildId
-) {
-  if (
-    afkReconnectTimers.has(
-      guildId
-    )
-  ) {
-    return;
-  }
-
-  const timer =
-    setTimeout(
-      async () => {
-        afkReconnectTimers.delete(
-          guildId
-        );
-
-        const guild =
-          client.guilds.cache.get(
-            guildId
-          );
-
-        if (!guild) {
-          return;
-        }
-
-        const config =
-          getGuildSettings(
-            guildId
-          );
-
-        if (
-          !config.afkVoiceChannelId
-        ) {
-          return;
-        }
-
-        await joinAfkVoice(
-          guild,
-          config.afkVoiceChannelId
-        );
-      },
-      5000
-    );
-
-  afkReconnectTimers.set(
-    guildId,
-    timer
-  );
 }
 
 /* =========================================================
@@ -881,458 +1169,111 @@ client.once(
       );
     }
 
-    /* =========================
-       RECONNECT AFK VOICES
-    ========================= */
-
-    for (
-      const guild of bot.guilds.cache.values()
-    ) {
-      const config =
-        getGuildSettings(
-          guild.id
-        );
-
-      if (
-        config.afkVoiceChannelId
-      ) {
-        setTimeout(
-          () => {
-            joinAfkVoice(
-              guild,
-              config.afkVoiceChannelId
-            );
-          },
-          2000
-        );
-      }
-    }
-
-    saveAll();
+    await joinAFKVoice();
   }
 );
 
 /* =========================================================
-   SPAM SYSTEM
-========================================================= */
-
-const SPAM_MESSAGE_LIMIT = 5;
-
-const SPAM_WINDOW_MS = 3000;
-
-const FIRST_TIMEOUT_MS =
-  5 * 60 * 1000;
-
-const SECOND_TIMEOUT_MS =
-  20 * 60 * 1000;
-
-const SPAM_WARNING_DELETE_MS =
-  2000;
-
-const spamWarningTimers =
-  new Map();
-
-function isModerator(
-  member
-) {
-  if (!member) {
-    return false;
-  }
-
-  return member.permissions.has(
-    PermissionFlagsBits.ModerateMembers
-  );
-}
-
-function isSpamExcludedChannel(
-  guildId,
-  channelId
-) {
-  const config =
-    getGuildSettings(
-      guildId
-    );
-
-  return config
-    .spamExcludedChannels
-    .includes(channelId);
-}
-
-function cleanupSpamHistory(
-  history
-) {
-  const now =
-    Date.now();
-
-  return history.filter(
-    (timestamp) =>
-      now - timestamp <=
-      SPAM_WINDOW_MS
-  );
-}
-
-function registerSpamMessage(
-  guildId,
-  userId
-) {
-  const config =
-    getGuildSettings(
-      guildId
-    );
-
-  if (
-    !config.spamHistory[userId]
-  ) {
-    config.spamHistory[userId] = [];
-  }
-
-  config.spamHistory[userId] =
-    cleanupSpamHistory(
-      config.spamHistory[userId]
-    );
-
-  config.spamHistory[userId].push(
-    Date.now()
-  );
-
-  return (
-    config.spamHistory[userId]
-      .length >
-    SPAM_MESSAGE_LIMIT
-  );
-}
-
-function getSpamPunishment(
-  guildId,
-  userId
-) {
-  const config =
-    getGuildSettings(
-      guildId
-    );
-
-  if (
-    !config.spamPunishments[userId]
-  ) {
-    config.spamPunishments[userId] = {
-      violations: 0,
-      lastViolation: 0,
-    };
-  }
-
-  return config
-    .spamPunishments[userId];
-}
-
-function clearSpamHistory(
-  guildId,
-  userId
-) {
-  const config =
-    getGuildSettings(
-      guildId
-    );
-
-  config.spamHistory[userId] = [];
-}
-
-function getTimeoutDuration(
-  guildId,
-  userId
-) {
-  const punishment =
-    getSpamPunishment(
-      guildId,
-      userId
-    );
-
-  /*
-    إذا كان عنده مخالفة سابقة
-    وأخذ timeout قبل، المرة التالية = 20 دقيقة.
-  */
-
-  if (
-    punishment.violations >= 1
-  ) {
-    return SECOND_TIMEOUT_MS;
-  }
-
-  return FIRST_TIMEOUT_MS;
-}
-
-async function sendSpamWarning(
-  message,
-  duration
-) {
-  const content =
-    duration ===
-    SECOND_TIMEOUT_MS
-      ? "again? hope you enjoy the 20 min!"
-      : "oops! seems like you send a lot of messages in a short time👀";
-
-  try {
-    const warning =
-      await message.channel.send({
-        content,
-      });
-
-    const timerKey =
-      warning.id;
-
-    const timer =
-      setTimeout(
-        async () => {
-          spamWarningTimers.delete(
-            timerKey
-          );
-
-          await warning
-            .delete()
-            .catch(() => {});
-        },
-        SPAM_WARNING_DELETE_MS
-      );
-
-    spamWarningTimers.set(
-      timerKey,
-      timer
-    );
-  } catch {}
-}
-
-async function applySpamTimeout(
-  message
-) {
-  if (!message.guild) {
-    return false;
-  }
-
-  const member =
-    message.member ||
-    await message.guild.members
-      .fetch(
-        message.author.id
-      )
-      .catch(() => null);
-
-  if (!member) {
-    return false;
-  }
-
-  /*
-    المودريترز لا يأخذون timeout.
-  */
-
-  if (
-    isModerator(member)
-  ) {
-    clearSpamHistory(
-      message.guild.id,
-      message.author.id
-    );
-
-    return false;
-  }
-
-  /*
-    البوت لا يحاول يعطي timeout
-    لأحد أعلى منه أو للبوت نفسه.
-  */
-
-  if (
-    !member.moderatable
-  ) {
-    clearSpamHistory(
-      message.guild.id,
-      message.author.id
-    );
-
-    return false;
-  }
-
-  const guildId =
-    message.guild.id;
-
-  const userId =
-    message.author.id;
-
-  const duration =
-    getTimeoutDuration(
-      guildId,
-      userId
-    );
-
-  const punishment =
-    getSpamPunishment(
-      guildId,
-      userId
-    );
-
-  /*
-    نسجل المخالفة قبل تنفيذ الـ timeout.
-  */
-
-  punishment.violations += 1;
-
-  punishment.lastViolation =
-    Date.now();
-
-  /*
-    نمسح التاريخ مباشرة حتى لا يحصل
-    timeout مزدوج بسبب تأخير أو رسائل
-    قادمة في نفس اللحظة.
-  */
-
-  clearSpamHistory(
-    guildId,
-    userId
-  );
-
-  saveAll();
-
-  try {
-    await member.timeout(
-      duration,
-      "Anti-spam protection"
-    );
-  } catch (error) {
-    console.error(
-      "Failed to timeout spammer:",
-      error
-    );
-
-    return false;
-  }
-
-  await sendSpamWarning(
-    message,
-    duration
-  );
-
-  return true;
-}
-
-/* =========================================================
-   MESSAGE XP + ANTI SPAM
+   MESSAGE CREATE
 ========================================================= */
 
 client.on(
   Events.MessageCreate,
   async (message) => {
-    if (!message.guild) {
+    if (
+      !message.guild
+    ) {
       return;
     }
-
-    if (message.author.bot) {
-      return;
-    }
-
-    if (!message.content) {
-      return;
-    }
-
-    const guildId =
-      message.guild.id;
-
-    const userId =
-      message.author.id;
-
-    const config =
-      getGuildSettings(
-        guildId
-      );
-
-    /* =====================================================
-       ANTI SPAM
-    ===================================================== */
 
     if (
-      config.spamEnabled &&
-      !isSpamExcludedChannel(
-        guildId,
-        message.channel.id
-      )
+      message.author.bot
     ) {
-      const member =
-        message.member ||
-        await message.guild.members
-          .fetch(userId)
-          .catch(() => null);
+      return;
+    }
 
-      /*
-        المودريتر لا يدخل في نظام الـ spam.
-      */
-
-      if (
-        !isModerator(member)
-      ) {
-        const spamDetected =
-          registerSpamMessage(
-            guildId,
-            userId
-          );
-
-        if (spamDetected) {
-          /*
-            نوقف معالجة الرسالة فورًا.
-            لذلك لا XP ولا Messages.
-          */
-
-          await applySpamTimeout(
-            message
-          );
-
-          return;
-        }
-      } else {
-        /*
-          لا نحتفظ بتاريخ سبام للمودريتر.
-        */
-
-        clearSpamHistory(
-          guildId,
-          userId
-        );
-      }
+    if (
+      !message.content
+    ) {
+      return;
     }
 
     /* =====================================================
-       LEVEL XP
+       ANTI-SPAM
     ===================================================== */
 
-    const user =
-      getUser(
-        guildId,
-        userId
+    const wasSpam =
+      await handleSpam(
+        message
       );
 
-    const oldLevel =
-      user.level;
+    if (
+      wasSpam
+    ) {
+      return;
+    }
+
+    /* =====================================================
+       XP SETTINGS
+    ===================================================== */
+
+    const guildSettings =
+      getGuildSettings(
+        message.guild.id
+      );
+
+    /*
+      This channel gets no XP.
+    */
+
+    if (
+      guildSettings.xpExemptChannelId ===
+      message.channel.id
+    ) {
+      return;
+    }
 
     const words =
       message.content
         .trim()
         .split(/\s+/)
-        .filter(Boolean);
+        .filter(
+          Boolean
+        );
 
-    if (!words.length) {
+    if (
+      !words.length
+    ) {
       return;
     }
 
-    /*
-      Normal XP:
-      1 - 10 XP per word.
-    */
+    /* =====================================================
+       USER
+    ===================================================== */
+
+    const user =
+      getUser(
+        message.guild.id,
+        message.author.id
+      );
+
+    const oldLevel =
+      user.level;
+
+    /* =====================================================
+       NORMAL XP
+       1 - 10 XP PER WORD
+    ===================================================== */
 
     let xpPerWord =
       Math.floor(
         Math.random() * 10
       ) + 1;
 
-    /*
-      13% chance:
-      11 - 100 XP per word.
-    */
+    /* =====================================================
+       13% BONUS
+       11 - 100 XP PER WORD
+    ===================================================== */
 
     if (
       Math.random() < 0.13
@@ -1350,12 +1291,12 @@ client.on(
     user.xp +=
       earnedXP;
 
-    user.messages += 1;
+    user.messages +=
+      1;
 
-    /*
-      لا يوجد Level Skip.
-      المستوى يتحدد فقط من XP.
-    */
+    /* =====================================================
+       LEVEL
+    ===================================================== */
 
     user.level =
       calculateLevel(
@@ -1369,131 +1310,92 @@ client.on(
     ===================================================== */
 
     if (
-      user.level > oldLevel
+      user.level >
+      oldLevel
     ) {
-      await sendLevelUpMessage(
-        message,
-        user
-      );
+      const currentLevelXP =
+        xpForLevel(
+          user.level
+        );
+
+      const nextLevelXP =
+        xpForLevel(
+          user.level + 1
+        );
+
+      const currentXP =
+        user.xp -
+        currentLevelXP;
+
+      const neededXP =
+        nextLevelXP -
+        currentLevelXP;
+
+      const embed =
+        new EmbedBuilder()
+          .setColor(
+            0x81c1eb
+          )
+          .setTitle(
+            "you have levelled up! keep it up for a cookie 🍪!"
+          )
+          .setDescription(
+            `${message.author} reached **Level ${user.level}**!`
+          )
+          .addFields(
+            {
+              name: "XP",
+              value:
+                `**${user.xp.toFixed(2)} XP**`,
+              inline: true,
+            },
+            {
+              name:
+                "Progress",
+              value:
+                `${progressBar(
+                  currentXP,
+                  neededXP
+                )}\n` +
+                `${currentXP.toFixed(2)} / ${neededXP.toFixed(2)} XP`,
+            }
+          );
+
+      /*
+        If a level channel is configured,
+        send there.
+
+        Otherwise, do not send anywhere.
+      */
+
+      if (
+        guildSettings.levelChannelId
+      ) {
+        const levelChannel =
+          message.guild.channels.cache.get(
+            guildSettings.levelChannelId
+          );
+
+        if (
+          levelChannel &&
+          levelChannel.isTextBased()
+        ) {
+          await levelChannel
+            .send({
+              content:
+                `${message.author}`,
+              embeds: [
+                embed,
+              ],
+            })
+            .catch(
+              () => {}
+            );
+        }
+      }
     }
   }
 );
-
-/* =========================================================
-   LEVEL UP MESSAGE
-========================================================= */
-
-async function sendLevelUpMessage(
-  message,
-  user
-) {
-  const guildId =
-    message.guild.id;
-
-  const config =
-    getGuildSettings(
-      guildId
-    );
-
-  /*
-    إذا لم يتم تحديد قناة Level Up
-    لا نرسل أي شيء.
-  */
-
-  if (
-    !config.levelUpChannelId
-  ) {
-    return;
-  }
-
-  const channel =
-    message.guild.channels.cache.get(
-      config.levelUpChannelId
-    );
-
-  if (
-    !channel ||
-    !channel.isTextBased()
-  ) {
-    return;
-  }
-
-  const currentLevelXP =
-    xpForLevel(
-      user.level
-    );
-
-  const nextLevelXP =
-    xpForLevel(
-      user.level + 1
-    );
-
-  const currentXP =
-    Math.max(
-      0,
-      user.xp -
-        currentLevelXP
-    );
-
-  const neededXP =
-    Math.max(
-      1,
-      nextLevelXP -
-        currentLevelXP
-    );
-
-  const embed =
-    new EmbedBuilder()
-      .setColor(0x81c1eb)
-      .setTitle(
-        "you have levelled up! keep it up for a cookie 🍪!"
-      )
-      .setDescription(
-        `${message.author} reached **Level ${user.level}**!`
-      )
-      .addFields(
-        {
-          name: "XP",
-          value:
-            `**${user.xp.toFixed(2)} XP**`,
-          inline: true,
-        },
-        {
-          name: "Progress",
-          value:
-            `${progressBar(
-              currentXP,
-              neededXP
-            )}\n` +
-            `${currentXP.toFixed(2)} / ${neededXP.toFixed(2)} XP`,
-        }
-      );
-
-  await channel
-    .send({
-      content:
-        `${message.author}`,
-      embeds: [embed],
-    })
-    .catch(() => {});
-}
-
-/* =========================================================
-   TOP XP
-========================================================= */
-
-function getTopXP(
-  guildId
-) {
-  return Object.entries(
-    levels[guildId] || {}
-  )
-    .sort(
-      (a, b) =>
-        b[1].xp - a[1].xp
-    )
-    .slice(0, 100);
-}
 
 /* =========================================================
    ANNOUNCEMENT BUILDER
@@ -1544,13 +1446,15 @@ async function buildAnnouncement(
 
   for (
     let i = 0;
-    i < pageUsers.length;
+    i <
+    pageUsers.length;
     i++
   ) {
     const [
       userId,
       user,
-    ] = pageUsers[i];
+    ] =
+      pageUsers[i];
 
     const guild =
       client.guilds.cache.get(
@@ -1559,14 +1463,17 @@ async function buildAnnouncement(
 
     const member =
       await guild?.members
-        .fetch(userId)
+        .fetch(
+          userId
+        )
         .catch(
           () => null
         );
 
     const name =
       member?.displayName ||
-      member?.user?.username ||
+      member?.user
+        ?.username ||
       `User ${userId}`;
 
     rows.push(
@@ -1576,7 +1483,9 @@ async function buildAnnouncement(
 
   const embed =
     new EmbedBuilder()
-      .setColor(0x00d4ff)
+      .setColor(
+        0x00d4ff
+      )
       .setTitle(
         title
       )
@@ -1609,7 +1518,8 @@ async function buildAnnouncement(
             ButtonStyle.Secondary
           )
           .setDisabled(
-            safePage === 0
+            safePage ===
+              0
           ),
 
         new ButtonBuilder()
@@ -1629,8 +1539,12 @@ async function buildAnnouncement(
       );
 
   return {
-    embeds: [embed],
-    components: [row],
+    embeds: [
+      embed,
+    ],
+    components: [
+      row,
+    ],
   };
 }
 
@@ -1650,7 +1564,8 @@ async function sendAnnouncement(
     )
   ) {
     if (
-      config.type !== type
+      config.type !==
+      type
     ) {
       continue;
     }
@@ -1666,7 +1581,9 @@ async function sendAnnouncement(
         guildId
       );
 
-    if (!guild) {
+    if (
+      !guild
+    ) {
       continue;
     }
 
@@ -1704,7 +1621,6 @@ async function sendAnnouncement(
 ========================================================= */
 
 let lastDaily = "";
-
 let lastWeekly = "";
 
 setInterval(
@@ -1724,9 +1640,12 @@ setInterval(
       `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}`;
 
     if (
-      now.getUTCHours() === 0 &&
-      now.getUTCMinutes() === 0 &&
-      lastDaily !== dateKey
+      now.getUTCHours() ===
+        0 &&
+      now.getUTCMinutes() ===
+        0 &&
+      lastDaily !==
+        dateKey
     ) {
       lastDaily =
         dateKey;
@@ -1737,10 +1656,14 @@ setInterval(
     }
 
     if (
-      now.getUTCDay() === 1 &&
-      now.getUTCHours() === 0 &&
-      now.getUTCMinutes() === 0 &&
-      lastWeekly !== weekKey
+      now.getUTCDay() ===
+        1 &&
+      now.getUTCHours() ===
+        0 &&
+      now.getUTCMinutes() ===
+        0 &&
+      lastWeekly !==
+        weekKey
     ) {
       lastWeekly =
         weekKey;
@@ -1759,9 +1682,12 @@ setInterval(
 
 client.on(
   Events.InteractionCreate,
-  async (
-    interaction
-  ) => {
+  async (interaction) => {
+    if (
+      !interaction.guild
+    ) {
+      return;
+    }
 
     /* =====================================================
        BUTTONS
@@ -1776,7 +1702,8 @@ client.on(
         );
 
       if (
-        parts[0] !== "xp"
+        parts[0] !==
+        "xp"
       ) {
         return;
       }
@@ -1791,9 +1718,8 @@ client.on(
         parts[3];
 
       if (
-        !interaction.guild ||
         guildIdFromButton !==
-          interaction.guild.id
+        interaction.guild.id
       ) {
         return;
       }
@@ -1802,7 +1728,8 @@ client.on(
         interaction.message
           .embeds[0]
           ?.footer
-          ?.text || "";
+          ?.text ||
+        "";
 
       const pageMatch =
         footer.match(
@@ -1832,8 +1759,10 @@ client.on(
       ) {
         newPage =
           Math.min(
-            currentPage + 1,
-            totalPages - 1
+            currentPage +
+              1,
+            totalPages -
+              1
           );
       }
 
@@ -1843,7 +1772,8 @@ client.on(
       ) {
         newPage =
           Math.max(
-            currentPage - 1,
+            currentPage -
+              1,
             0
           );
       }
@@ -1856,7 +1786,9 @@ client.on(
         );
 
       await interaction
-        .update(updated)
+        .update(
+          updated
+        )
         .catch(
           () => {}
         );
@@ -1865,7 +1797,7 @@ client.on(
     }
 
     /* =====================================================
-       SLASH COMMAND CHECK
+       SLASH COMMAND
     ===================================================== */
 
     if (
@@ -1874,34 +1806,20 @@ client.on(
       return;
     }
 
-    if (
-      !interaction.guild
-    ) {
-      return;
-    }
-
-    /* =====================================================
-       COMMAND COOLDOWN
-    ===================================================== */
-
     const cooldown =
-      isCommandOnCooldown(
+      checkCommandCooldown(
         interaction
       );
 
     if (
-      cooldown.onCooldown
+      cooldown > 0
     ) {
-      const seconds =
-        Math.ceil(
-          cooldown.remaining /
-            1000
-        );
-
       await interaction
         .reply({
           content:
-            `Please wait **${seconds}s** before using this command again.`,
+            `Please wait ${Math.ceil(
+              cooldown / 1000
+            )} second(s) before using this command again.`,
           ephemeral: true,
         })
         .catch(
@@ -1913,6 +1831,11 @@ client.on(
 
     const guildId =
       interaction.guild.id;
+
+    const guildSettings =
+      getGuildSettings(
+        guildId
+      );
 
     /* =====================================================
        /LEVEL
@@ -1964,18 +1887,12 @@ client.on(
         );
 
       const currentXP =
-        Math.max(
-          0,
-          user.xp -
-            currentLevelXP
-        );
+        user.xp -
+        currentLevelXP;
 
       const neededXP =
-        Math.max(
-          1,
-          nextLevelXP -
-            currentLevelXP
-        );
+        nextLevelXP -
+        currentLevelXP;
 
       const embed =
         new EmbedBuilder()
@@ -1999,25 +1916,29 @@ client.on(
           )
           .addFields(
             {
-              name: "XP",
+              name:
+                "XP",
               value:
                 `**${user.xp.toFixed(2)}**`,
               inline: true,
             },
             {
-              name: "Level",
+              name:
+                "Level",
               value:
                 `**${user.level}**`,
               inline: true,
             },
             {
-              name: "Messages",
+              name:
+                "Messages",
               value:
                 `**${user.messages.toLocaleString()}**`,
               inline: true,
             },
             {
-              name: "Server",
+              name:
+                "Server",
               value:
                 interaction.guild.name,
             }
@@ -2030,9 +1951,15 @@ client.on(
               "Keep it up to claim higher ranks and get more cookies! 🍪",
           });
 
-      await interaction.reply({
-        embeds: [embed],
-      });
+      await interaction
+        .reply({
+          embeds: [
+            embed,
+          ],
+        })
+        .catch(
+          () => {}
+        );
 
       return;
     }
@@ -2052,9 +1979,13 @@ client.on(
           0
         );
 
-      await interaction.reply(
-        announcement
-      );
+      await interaction
+        .reply(
+          announcement
+        )
+        .catch(
+          () => {}
+        );
 
       return;
     }
@@ -2079,7 +2010,8 @@ client.on(
         );
 
       if (
-        type === "off"
+        type ===
+        "off"
       ) {
         delete announcements[
           guildId
@@ -2087,11 +2019,15 @@ client.on(
 
         saveAll();
 
-        await interaction.reply({
-          content:
-            "XP announcements are now disabled.",
-          ephemeral: true,
-        });
+        await interaction
+          .reply({
+            content:
+              "XP announcements are now disabled.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
 
         return;
       }
@@ -2100,11 +2036,15 @@ client.on(
         !channel ||
         !channel.isTextBased()
       ) {
-        await interaction.reply({
-          content:
-            "Please select a text channel.",
-          ephemeral: true,
-        });
+        await interaction
+          .reply({
+            content:
+              "Please select a text channel.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
 
         return;
       }
@@ -2119,90 +2059,65 @@ client.on(
 
       saveAll();
 
-      await interaction.reply({
-        content:
-          `${type === "daily" ? "Daily" : "Weekly"} XP announcements are now enabled in ${channel}.`,
-        ephemeral: true,
-      });
+      await interaction
+        .reply({
+          content:
+            `${type === "daily" ? "Daily" : "Weekly"} XP announcements are now enabled in ${channel}.`,
+          ephemeral: true,
+        })
+        .catch(
+          () => {}
+        );
 
       return;
     }
 
     /* =====================================================
-       /SPAM-CONTROL
+       /SPAM
     ===================================================== */
 
     if (
       interaction.commandName ===
-      "spam-control"
+      "spam"
     ) {
-      const status =
+      const mode =
         interaction.options.getString(
-          "status",
+          "mode",
           true
         );
 
-      const config =
-        getGuildSettings(
-          guildId
+      guildSettings.spamEnabled =
+        mode ===
+        "on";
+
+      saveAll();
+
+      await interaction
+        .reply({
+          content:
+            guildSettings.spamEnabled
+              ? "Anti-spam is now enabled."
+              : "Anti-spam is now disabled.",
+          ephemeral: true,
+        })
+        .catch(
+          () => {}
         );
-
-      if (
-        status === "on"
-      ) {
-        config.spamEnabled =
-          true;
-
-        saveAll();
-
-        await interaction.reply({
-          content:
-            "Anti-spam is now **ON**.",
-          ephemeral: true,
-        });
-
-        return;
-      }
-
-      if (
-        status === "off"
-      ) {
-        config.spamEnabled =
-          false;
-
-        /*
-          تنظيف الـ spam history
-          عند الإطفاء.
-        */
-
-        config.spamHistory =
-          {};
-
-        saveAll();
-
-        await interaction.reply({
-          content:
-            "Anti-spam is now **OFF**.",
-          ephemeral: true,
-        });
-
-        return;
-      }
 
       return;
     }
 
     /* =====================================================
-       /SPAM-CHANNEL
+       /SPAM-EXEMPT
     ===================================================== */
 
     if (
       interaction.commandName ===
-      "spam-channel"
+      "spam-exempt"
     ) {
-      const action =
+      const mode =
         interaction.options.getString(
-          "action",
+          "mode",
           true
         );
 
@@ -2211,82 +2126,135 @@ client.on(
           "channel"
         );
 
-      const config =
-        getGuildSettings(
-          guildId
+      if (
+        mode ===
+        "off"
+      ) {
+        guildSettings.spamExemptChannelId =
+          null;
+
+        saveAll();
+
+        await interaction
+          .reply({
+            content:
+              "Spam channel exemption has been disabled.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
+
+        return;
+      }
+
+      if (
+        !channel ||
+        !channel.isTextBased()
+      ) {
+        await interaction
+          .reply({
+            content:
+              "Please select a text channel.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
+
+        return;
+      }
+
+      guildSettings.spamExemptChannelId =
+        channel.id;
+
+      saveAll();
+
+      await interaction
+        .reply({
+          content:
+            `Anti-spam timeout protection is now disabled in ${channel}.`,
+          ephemeral: true,
+        })
+        .catch(
+          () => {}
+        );
+
+      return;
+    }
+
+    /* =====================================================
+       /XP-EXEMPT
+    ===================================================== */
+
+    if (
+      interaction.commandName ===
+      "xp-exempt"
+    ) {
+      const mode =
+        interaction.options.getString(
+          "mode",
+          true
+        );
+
+      const channel =
+        interaction.options.getChannel(
+          "channel"
         );
 
       if (
-        action === "clear"
+        mode ===
+        "off"
       ) {
-        config.spamExcludedChannels =
-          [];
+        guildSettings.xpExemptChannelId =
+          null;
 
         saveAll();
 
-        await interaction.reply({
-          content:
-            "All anti-spam excluded channels have been cleared.",
-          ephemeral: true,
-        });
-
-        return;
-      }
-
-      if (!channel) {
-        await interaction.reply({
-          content:
-            "Please select a text channel.",
-          ephemeral: true,
-        });
+        await interaction
+          .reply({
+            content:
+              "XP channel exemption has been disabled.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
 
         return;
       }
 
       if (
-        action === "add"
+        !channel ||
+        !channel.isTextBased()
       ) {
-        if (
-          !config.spamExcludedChannels.includes(
-            channel.id
-          )
-        ) {
-          config.spamExcludedChannels.push(
-            channel.id
+        await interaction
+          .reply({
+            content:
+              "Please select a text channel.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
           );
-        }
-
-        saveAll();
-
-        await interaction.reply({
-          content:
-            `Anti-spam is now ignored in ${channel}.`,
-          ephemeral: true,
-        });
 
         return;
       }
 
-      if (
-        action === "remove"
-      ) {
-        config.spamExcludedChannels =
-          config.spamExcludedChannels.filter(
-            (id) =>
-              id !==
-              channel.id
-          );
+      guildSettings.xpExemptChannelId =
+        channel.id;
 
-        saveAll();
+      saveAll();
 
-        await interaction.reply({
+      await interaction
+        .reply({
           content:
-            `Anti-spam is no longer ignored in ${channel}.`,
+            `Messages in ${channel} will no longer give XP.`,
           ephemeral: true,
-        });
-
-        return;
-      }
+        })
+        .catch(
+          () => {}
+        );
 
       return;
     }
@@ -2299,9 +2267,9 @@ client.on(
       interaction.commandName ===
       "level-channel"
     ) {
-      const action =
+      const mode =
         interaction.options.getString(
-          "action",
+          "mode",
           true
         );
 
@@ -2310,166 +2278,59 @@ client.on(
           "channel"
         );
 
-      const config =
-        getGuildSettings(
-          guildId
-        );
-
       if (
-        action === "off"
+        mode ===
+        "off"
       ) {
-        config.levelUpChannelId =
+        guildSettings.levelChannelId =
           null;
 
         saveAll();
 
-        await interaction.reply({
-          content:
-            "Level-up messages are now **OFF**.",
-          ephemeral: true,
-        });
+        await interaction
+          .reply({
+            content:
+              "Level-up announcements are now disabled.",
+            ephemeral: true,
+          })
+          .catch(
+            () => {}
+          );
 
         return;
       }
 
       if (
-        action === "set"
+        !channel ||
+        !channel.isTextBased()
       ) {
-        if (
-          !channel ||
-          !channel.isTextBased()
-        ) {
-          await interaction.reply({
+        await interaction
+          .reply({
             content:
               "Please select a text channel.",
             ephemeral: true,
-          });
+          })
+          .catch(
+            () => {}
+          );
 
-          return;
-        }
+        return;
+      }
 
-        config.levelUpChannelId =
-          channel.id;
+      guildSettings.levelChannelId =
+        channel.id;
 
-        saveAll();
+      saveAll();
 
-        await interaction.reply({
+      await interaction
+        .reply({
           content:
             `Level-up messages will now be sent in ${channel}.`,
           ephemeral: true,
-        });
-
-        return;
-      }
-
-      return;
-    }
-
-    /* =====================================================
-       /AFK-VOICE
-    ===================================================== */
-
-    if (
-      interaction.commandName ===
-      "afk-voice"
-    ) {
-      const action =
-        interaction.options.getString(
-          "action",
-          true
+        })
+        .catch(
+          () => {}
         );
-
-      const channel =
-        interaction.options.getChannel(
-          "channel"
-        );
-
-      const config =
-        getGuildSettings(
-          guildId
-        );
-
-      /* =========================
-         OFF
-      ========================= */
-
-      if (
-        action === "off"
-      ) {
-        config.afkVoiceChannelId =
-          null;
-
-        const connection =
-          getVoiceConnection(
-            guildId
-          );
-
-        if (connection) {
-          try {
-            connection.destroy();
-          } catch {}
-        }
-
-        saveAll();
-
-        await interaction.reply({
-          content:
-            "24/7 AFK Voice is now **OFF** and the bot has left the voice channel.",
-          ephemeral: true,
-        });
-
-        return;
-      }
-
-      /* =========================
-         SET / JOIN
-      ========================= */
-
-      if (
-        action === "set"
-      ) {
-        if (
-          !channel ||
-          !channel.isVoiceBased()
-        ) {
-          await interaction.reply({
-            content:
-              "Please select a voice channel.",
-            ephemeral: true,
-          });
-
-          return;
-        }
-
-        config.afkVoiceChannelId =
-          channel.id;
-
-        saveAll();
-
-        const joined =
-          await joinAfkVoice(
-            interaction.guild,
-            channel.id
-          );
-
-        if (!joined) {
-          await interaction.reply({
-            content:
-              "I couldn't join that voice channel. Check my Connect permission.",
-            ephemeral: true,
-          });
-
-          return;
-        }
-
-        await interaction.reply({
-          content:
-            `24/7 AFK Voice is now enabled in ${channel}.`,
-          ephemeral: true,
-        });
-
-        return;
-      }
 
       return;
     }
@@ -2480,4 +2341,6 @@ client.on(
    LOGIN
 ========================================================= */
 
-client.login(TOKEN);
+client.login(
+  TOKEN
+);
