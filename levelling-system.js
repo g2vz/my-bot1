@@ -40,9 +40,9 @@ const ANNOUNCEMENTS_FILE = path.join(
   "announcements.json"
 );
 
-const SETTINGS_FILE = path.join(
+const ANTISPAM_FILE = path.join(
   DATA_DIR,
-  "settings.json"
+  "antispam.json"
 );
 
 fs.mkdirSync(DATA_DIR, {
@@ -76,12 +76,9 @@ const announcements = load(
   {}
 );
 
-const settings = load(
-  SETTINGS_FILE,
-  {
-    excludedXpChannels: {},
-    spamUsers: {},
-  }
+const antispam = load(
+  ANTISPAM_FILE,
+  {}
 );
 
 function saveAll() {
@@ -96,14 +93,48 @@ function saveAll() {
   );
 
   save(
-    SETTINGS_FILE,
-    settings
+    ANTISPAM_FILE,
+    antispam
   );
 }
 
 /* =========================
+   RUNTIME DATA
+========================= */
+
+const recentMessages = new Map();
+
+const commandCooldowns = new Map();
+
+const spamTimeouts = new Map();
+
+/* =========================
+   CONSTANTS
+========================= */
+
+const SPAM_MESSAGE_LIMIT = 5;
+const SPAM_WINDOW_MS = 3000;
+
+const FIRST_TIMEOUT_MS =
+  5 * 60 * 1000;
+
+const SECOND_TIMEOUT_MS =
+  20 * 60 * 1000;
+
+const COMMAND_COOLDOWN_MS =
+  2000;
+
+/* =========================
    LEVEL SYSTEM
 ========================= */
+
+function randomProgressTarget() {
+  return (
+    Math.floor(
+      Math.random() * 4
+    ) + 6
+  );
+}
 
 function getUser(
   guildId,
@@ -118,7 +149,20 @@ function getUser(
       xp: 0,
       level: 0,
       messages: 0,
+      nextProgressNotice:
+        randomProgressTarget(),
     };
+  }
+
+  if (
+    typeof levels[guildId][userId]
+      .nextProgressNotice !== "number"
+  ) {
+    levels[guildId][userId]
+      .nextProgressNotice =
+      levels[guildId][userId]
+        .messages +
+      randomProgressTarget();
   }
 
   return levels[guildId][userId];
@@ -126,7 +170,8 @@ function getUser(
 
 function xpForLevel(level) {
   return Math.floor(
-    100 * Math.pow(level, 1.5)
+    100 *
+      Math.pow(level, 1.5)
   );
 }
 
@@ -134,7 +179,8 @@ function calculateLevel(xp) {
   let level = 0;
 
   while (
-    xp >= xpForLevel(level + 1)
+    xp >=
+    xpForLevel(level + 1)
   ) {
     level++;
   }
@@ -151,17 +197,19 @@ function progressBar(
     return "████████████";
   }
 
-  const percentage = Math.max(
-    0,
-    Math.min(
-      1,
-      current / needed
-    )
-  );
+  const percentage =
+    Math.max(
+      0,
+      Math.min(
+        1,
+        current / needed
+      )
+    );
 
-  const filled = Math.floor(
-    percentage * size
-  );
+  const filled =
+    Math.floor(
+      percentage * size
+    );
 
   return (
     "█".repeat(filled) +
@@ -175,9 +223,10 @@ function getRank(
   guildId,
   userId
 ) {
-  const users = Object.entries(
-    levels[guildId] || {}
-  );
+  const users =
+    Object.entries(
+      levels[guildId] || {}
+    );
 
   users.sort(
     (a, b) =>
@@ -196,369 +245,176 @@ function getRank(
 }
 
 /* =========================
-   XP EXCLUDED CHANNEL
+   MODERATOR CHECK
 ========================= */
 
-function isXpExcluded(
-  guildId,
-  channelId
-) {
-  return (
-    settings
-      .excludedXpChannels?.[
-      guildId
-    ] === channelId
-  );
-}
-
-/* =========================
-   COMMAND COOLDOWNS
-========================= */
-
-const commandCooldowns =
-  new Map();
-
-function getCommandCooldown(
-  userId,
-  guildId
-) {
-  return `${guildId}:${userId}`;
-}
-
-function isCommandOnCooldown(
-  userId,
-  guildId
-) {
-  const key =
-    getCommandCooldown(
-      userId,
-      guildId
-    );
-
-  const expires =
-    commandCooldowns.get(key);
-
-  if (!expires) {
+function isModerator(member) {
+  if (!member) {
     return false;
   }
 
   if (
-    Date.now() >= expires
-  ) {
-    commandCooldowns.delete(
-      key
-    );
-
-    return false;
-  }
-
-  return true;
-}
-
-function setCommandCooldown(
-  userId,
-  guildId
-) {
-  const key =
-    getCommandCooldown(
-      userId,
-      guildId
-    );
-
-  const seconds =
-    Math.random() < 0.25
-      ? 3
-      : 2;
-
-  commandCooldowns.set(
-    key,
-    Date.now() +
-      seconds * 1000
-  );
-
-  return seconds;
-}
-
-function getRemainingCooldown(
-  userId,
-  guildId
-) {
-  const key =
-    getCommandCooldown(
-      userId,
-      guildId
-    );
-
-  const expires =
-    commandCooldowns.get(key);
-
-  if (!expires) {
-    return 0;
-  }
-
-  return Math.max(
-    0,
-    expires - Date.now()
-  );
-}
-
-/* =========================
-   ANTI SPAM
-========================= */
-
-const spamTracker =
-  new Map();
-
-const spamActionLock =
-  new Set();
-
-const SPAM_MESSAGE_LIMIT = 5;
-const SPAM_TIME_WINDOW = 3000;
-
-const FIRST_SPAM_TIMEOUT =
-  5 * 60 * 1000;
-
-const SECOND_SPAM_TIMEOUT =
-  20 * 60 * 1000;
-
-const SPAM_RESPONSE_DELAY =
-  2000;
-
-function getSpamKey(
-  guildId,
-  userId
-) {
-  return `${guildId}:${userId}`;
-}
-
-function getSpamHistory(
-  guildId,
-  userId
-) {
-  const key =
-    getSpamKey(
-      guildId,
-      userId
-    );
-
-  if (!spamTracker.has(key)) {
-    spamTracker.set(
-      key,
-      []
-    );
-  }
-
-  return spamTracker.get(
-    key
-  );
-}
-
-function cleanSpamHistory(
-  timestamps
-) {
-  const now = Date.now();
-
-  return timestamps.filter(
-    (timestamp) =>
-      now - timestamp <=
-      SPAM_TIME_WINDOW
-  );
-}
-
-function hasSpamLock(
-  guildId,
-  userId
-) {
-  return spamActionLock.has(
-    getSpamKey(
-      guildId,
-      userId
-    )
-  );
-}
-
-function addSpamLock(
-  guildId,
-  userId
-) {
-  spamActionLock.add(
-    getSpamKey(
-      guildId,
-      userId
-    )
-  );
-}
-
-function removeSpamLock(
-  guildId,
-  userId
-) {
-  spamActionLock.delete(
-    getSpamKey(
-      guildId,
-      userId
-    )
-  );
-}
-
-function getSpamStrike(
-  guildId,
-  userId
-) {
-  if (!settings.spamUsers) {
-    settings.spamUsers = {};
-  }
-
-  const key =
-    getSpamKey(
-      guildId,
-      userId
-    );
-
-  if (
-    !settings.spamUsers[key]
-  ) {
-    settings.spamUsers[key] = {
-      strikes: 0,
-    };
-  }
-
-  return settings.spamUsers[key];
-}
-
-async function handleSpam(
-  message
-) {
-  if (!message.guild) {
-    return false;
-  }
-
-  if (message.author.bot) {
-    return false;
-  }
-
-  const guildId =
-    message.guild.id;
-
-  const userId =
-    message.author.id;
-
-  const history =
-    getSpamHistory(
-      guildId,
-      userId
-    );
-
-  const now = Date.now();
-
-  const cleaned =
-    cleanSpamHistory(
-      history
-    );
-
-  cleaned.push(now);
-
-  spamTracker.set(
-    getSpamKey(
-      guildId,
-      userId
-    ),
-    cleaned
-  );
-
-  if (
-    cleaned.length <=
-    SPAM_MESSAGE_LIMIT
-  ) {
-    return false;
-  }
-
-  if (
-    hasSpamLock(
-      guildId,
-      userId
+    member.permissions.has(
+      PermissionFlagsBits.Administrator
     )
   ) {
     return true;
   }
 
-  addSpamLock(
-    guildId,
-    userId
-  );
+  if (
+    member.permissions.has(
+      PermissionFlagsBits.ModerateMembers
+    )
+  ) {
+    return true;
+  }
 
-  const spamData =
-    getSpamStrike(
+  if (
+    member.permissions.has(
+      PermissionFlagsBits.ManageMessages
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    member.permissions.has(
+      PermissionFlagsBits.ManageGuild
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/* =========================
+   ANTISPAM CONFIG
+========================= */
+
+function getGuildAntispam(
+  guildId
+) {
+  if (!antispam[guildId]) {
+    antispam[guildId] = {
+      excludedChannelId: null,
+    };
+  }
+
+  return antispam[guildId];
+}
+
+function isExcludedChannel(
+  guildId,
+  channelId
+) {
+  const config =
+    getGuildAntispam(
+      guildId
+    );
+
+  return (
+    config.excludedChannelId ===
+    channelId
+  );
+}
+
+/* =========================
+   SPAM TRACKING
+========================= */
+
+function getRecentMessages(
+  guildId,
+  userId
+) {
+  const key =
+    `${guildId}:${userId}`;
+
+  if (
+    !recentMessages.has(key)
+  ) {
+    recentMessages.set(
+      key,
+      []
+    );
+  }
+
+  return recentMessages.get(
+    key
+  );
+}
+
+function cleanRecentMessages(
+  guildId,
+  userId,
+  now
+) {
+  const messages =
+    getRecentMessages(
       guildId,
       userId
     );
 
-  spamData.strikes += 1;
+  const cutoff =
+    now - SPAM_WINDOW_MS;
 
-  const timeoutDuration =
-    spamData.strikes === 1
-      ? FIRST_SPAM_TIMEOUT
-      : SECOND_SPAM_TIMEOUT;
-
-  const warning =
-    spamData.strikes === 1
-      ? "oops! seems like you send a lot of messages in a short time👀"
-      : "again? hope you enjoy the 20 min!";
-
-  const member =
-    await message.guild.members
-      .fetch(userId)
-      .catch(() => null);
-
-  if (member) {
-    const botMember =
-      message.guild.members.me;
-
-    const canTimeout =
-      botMember &&
-      botMember.permissions.has(
-        PermissionFlagsBits.ModerateMembers
-      ) &&
-      member.moderatable;
-
-    if (canTimeout) {
-      await member
-        .timeout(
-          timeoutDuration,
-          "Anti-spam protection"
-        )
-        .catch(() => {});
-    }
+  while (
+    messages.length &&
+    messages[0].timestamp <
+      cutoff
+  ) {
+    messages.shift();
   }
 
-  saveAll();
+  return messages;
+}
 
-  spamTracker.set(
-    getSpamKey(
-      guildId,
-      userId
-    ),
-    []
+function clearRecentMessages(
+  guildId,
+  userId
+) {
+  const key =
+    `${guildId}:${userId}`;
+
+  recentMessages.delete(key);
+}
+
+/* =========================
+   COMMAND COOLDOWN
+========================= */
+
+function checkCommandCooldown(
+  interaction
+) {
+  const key =
+    `${interaction.guild.id}:${interaction.user.id}`;
+
+  const now = Date.now();
+
+  const lastUsed =
+    commandCooldowns.get(key) ||
+    0;
+
+  const elapsed =
+    now - lastUsed;
+
+  if (
+    elapsed <
+    COMMAND_COOLDOWN_MS
+  ) {
+    return Math.ceil(
+      (COMMAND_COOLDOWN_MS -
+        elapsed) /
+        1000
+    );
+  }
+
+  commandCooldowns.set(
+    key,
+    now
   );
 
-  await new Promise(
-    (resolve) =>
-      setTimeout(
-        resolve,
-        SPAM_RESPONSE_DELAY
-      )
-  );
-
-  await message.channel
-    .send(warning)
-    .catch(() => {});
-
-  removeSpamLock(
-    guildId,
-    userId
-  );
-
-  return true;
+  return 0;
 }
 
 /* =========================
@@ -629,38 +485,21 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
-    .setName("xp-exclude")
+    .setName(
+      "antispam-channel"
+    )
     .setDescription(
-      "Configure a channel where messages do not give XP"
+      "Set or disable the channel where anti-spam timeouts are ignored"
     )
     .setDefaultMemberPermissions(
       PermissionFlagsBits.ManageGuild
-    )
-    .addStringOption(
-      (option) =>
-        option
-          .setName("action")
-          .setDescription(
-            "Enable or disable XP exclusion"
-          )
-          .setRequired(true)
-          .addChoices(
-            {
-              name: "Set Channel",
-              value: "set",
-            },
-            {
-              name: "Off",
-              value: "off",
-            }
-          )
     )
     .addChannelOption(
       (option) =>
         option
           .setName("channel")
           .setDescription(
-            "Channel where XP should not be given"
+            "Channel to exclude from anti-spam timeouts"
           )
           .setRequired(false)
     ),
@@ -690,7 +529,9 @@ async function registerCommands() {
   const rest =
     new REST({
       version: "10",
-    }).setToken(TOKEN);
+    }).setToken(
+      TOKEN
+    );
 
   if (GUILD_ID) {
     await rest.put(
@@ -745,7 +586,77 @@ client.once(
 );
 
 /* =========================
-   MESSAGE XP
+   SEND LEVEL MESSAGE
+========================= */
+
+async function sendProgressMessage(
+  message,
+  user
+) {
+  const currentLevelXP =
+    xpForLevel(
+      user.level
+    );
+
+  const nextLevelXP =
+    xpForLevel(
+      user.level + 1
+    );
+
+  const currentXP =
+    Math.max(
+      0,
+      user.xp -
+        currentLevelXP
+    );
+
+  const neededXP =
+    Math.max(
+      1,
+      nextLevelXP -
+        currentLevelXP
+    );
+
+  const embed =
+    new EmbedBuilder()
+      .setColor(0x81c1eb)
+      .setTitle(
+        "you have levelled up! keep it up for a cookie 🍪!"
+      )
+      .setDescription(
+        `${message.author} reached **Level ${user.level}**!`
+      )
+      .addFields(
+        {
+          name: "XP",
+          value:
+            `**${user.xp.toFixed(2)} XP**`,
+          inline: true,
+        },
+        {
+          name: "Progress",
+          value:
+            `${progressBar(
+              currentXP,
+              neededXP
+            )}\n` +
+            `${currentXP.toFixed(
+              2
+            )} / ${neededXP.toFixed(
+              2
+            )} XP`,
+        }
+      );
+
+  await message.channel
+    .send({
+      embeds: [embed],
+    })
+    .catch(() => {});
+}
+
+/* =========================
+   MESSAGE XP + ANTISPAM
 ========================= */
 
 client.on(
@@ -763,39 +674,185 @@ client.on(
       return;
     }
 
-    /*
-      Anti-spam runs before XP.
-      Spam messages never receive XP.
-    */
+    const guildId =
+      message.guild.id;
 
-    const wasSpam =
-      await handleSpam(
-        message
+    const userId =
+      message.author.id;
+
+    const member =
+      message.member;
+
+    const now =
+      Date.now();
+
+    const recent =
+      cleanRecentMessages(
+        guildId,
+        userId,
+        now
       );
 
-    if (wasSpam) {
-      return;
-    }
+    recent.push({
+      timestamp: now,
+      xp: 0,
+      messageCounted: false,
+    });
 
-    /*
-      Excluded XP channel:
-      Messages still work normally,
-      but they do not give XP or message count.
-    */
+    /* =========================
+       ANTISPAM
+    ========================= */
+
+    const spamDetected =
+      recent.length >
+      SPAM_MESSAGE_LIMIT;
+
+    const excluded =
+      isExcludedChannel(
+        guildId,
+        message.channel.id
+      );
+
+    const moderator =
+      isModerator(member);
 
     if (
-      isXpExcluded(
-        message.guild.id,
-        message.channel.id
-      )
+      spamDetected &&
+      !excluded &&
+      !moderator
     ) {
+      const key =
+        `${guildId}:${userId}`;
+
+      if (
+        spamTimeouts.has(key)
+      ) {
+        clearRecentMessages(
+          guildId,
+          userId
+        );
+
+        return;
+      }
+
+      const user =
+        getUser(
+          guildId,
+          userId
+        );
+
+      let removedXP = 0;
+      let removedMessages = 0;
+
+      for (
+        const entry of recent
+      ) {
+        if (
+          entry.messageCounted
+        ) {
+          removedXP +=
+            entry.xp;
+
+          removedMessages++;
+        }
+      }
+
+      user.xp =
+        Math.max(
+          0,
+          user.xp -
+            removedXP
+        );
+
+      user.messages =
+        Math.max(
+          0,
+          user.messages -
+            removedMessages
+        );
+
+      user.level =
+        calculateLevel(
+          user.xp
+        );
+
+      saveAll();
+
+      clearRecentMessages(
+        guildId,
+        userId
+      );
+
+      const previous =
+        spamTimeouts.get(
+          key
+        );
+
+      const isSecondOffense =
+        previous === true;
+
+      const timeoutDuration =
+        isSecondOffense
+          ? SECOND_TIMEOUT_MS
+          : FIRST_TIMEOUT_MS;
+
+      const timeoutMessage =
+        isSecondOffense
+          ? "again? hope you enjoy the 20 min!"
+          : "oops! seems like you send a lot of messages in a short time👀";
+
+      spamTimeouts.set(
+        key,
+        true
+      );
+
+      setTimeout(
+        () => {
+          spamTimeouts.delete(
+            key
+          );
+        },
+        timeoutDuration + 5000
+      );
+
+      try {
+        if (
+          member &&
+          member.moderatable
+        ) {
+          await member.timeout(
+            timeoutDuration,
+            isSecondOffense
+              ? "Repeated spam"
+              : "Spam"
+          );
+        }
+
+        await message.channel
+          .send({
+            content:
+              timeoutMessage,
+          })
+          .catch(() => {});
+      } catch (error) {
+        console.error(
+          "Failed to apply spam timeout:",
+          error
+        );
+      }
+
       return;
     }
+
+    /* =========================
+       MODERATOR / EXCLUDED
+       MESSAGE HANDLING
+    ========================= */
 
     const user =
       getUser(
-        message.guild.id,
-        message.author.id
+        guildId,
+        userId
       );
 
     const oldLevel =
@@ -811,10 +868,9 @@ client.on(
       return;
     }
 
-    /*
-      Normal XP:
-      Each word gives a random amount from 1 to 10 XP.
-    */
+    /* =========================
+       XP CALCULATION
+    ========================= */
 
     let xpPerWord =
       Math.floor(
@@ -823,15 +879,16 @@ client.on(
 
     /*
       13% chance:
-      Each word gives a random amount from 11 to 99 XP.
+      11 to 100 XP per word.
     */
 
     if (
-      Math.random() < 0.13
+      Math.random() <
+      0.13
     ) {
       xpPerWord =
         Math.floor(
-          Math.random() * 89
+          Math.random() * 90
         ) + 11;
     }
 
@@ -842,111 +899,66 @@ client.on(
     user.xp +=
       earnedXP;
 
-    user.messages += 1;
+    user.messages +=
+      1;
 
-    /*
-      5% chance:
-      Move directly to the next level.
-    */
+    user.level =
+      calculateLevel(
+        user.xp
+      );
 
-    const levelSkip =
-      Math.random() < 0.05;
+    /* =========================
+       TRACK XP FOR ANTISPAM
+    ========================= */
 
-    if (levelSkip) {
-      const nextLevel =
-        Math.max(
-          oldLevel + 1,
-          calculateLevel(
-            user.xp
-          )
-        );
+    const latest =
+      cleanRecentMessages(
+        guildId,
+        userId,
+        now
+      );
 
-      user.level =
-        nextLevel;
+    const currentEntry =
+      latest[
+        latest.length - 1
+      ];
 
-      const requiredXP =
-        xpForLevel(
-          nextLevel
-        );
+    if (currentEntry) {
+      currentEntry.xp =
+        earnedXP;
 
-      if (
-        user.xp <
-        requiredXP
-      ) {
-        user.xp =
-          requiredXP;
-      }
-    } else {
-      user.level =
-        calculateLevel(
-          user.xp
-        );
+      currentEntry.messageCounted =
+        true;
     }
 
     saveAll();
 
     /* =========================
-       LEVEL UP
+       LEVEL / PROGRESS NOTICE
     ========================= */
 
-    if (
+    const levelUp =
       user.level >
-      oldLevel
+      oldLevel;
+
+    const progressNotice =
+      user.messages >=
+      user.nextProgressNotice;
+
+    if (
+      levelUp ||
+      progressNotice
     ) {
-      const currentLevelXP =
-        xpForLevel(
-          user.level
-        );
+      await sendProgressMessage(
+        message,
+        user
+      );
 
-      const nextLevelXP =
-        xpForLevel(
-          user.level + 1
-        );
+      user.nextProgressNotice =
+        user.messages +
+        randomProgressTarget();
 
-      const currentXP =
-        user.xp -
-        currentLevelXP;
-
-      const neededXP =
-        nextLevelXP -
-        currentLevelXP;
-
-      const embed =
-        new EmbedBuilder()
-          .setColor(
-            0x81c1eb
-          )
-          .setTitle(
-            "you have levelled up! keep it up for a cookie 🍪!"
-          )
-          .setDescription(
-            `${message.author} reached **Level ${user.level}**!`
-          )
-          .addFields(
-            {
-              name: "XP",
-              value:
-                `**${user.xp.toFixed(2)} XP**`,
-              inline: true,
-            },
-            {
-              name: "Progress",
-              value:
-                `${progressBar(
-                  currentXP,
-                  neededXP
-                )}\n` +
-                `${currentXP.toFixed(2)} / ${neededXP.toFixed(2)} XP`,
-            }
-          );
-
-      await message.channel
-        .send({
-          embeds: [
-            embed,
-          ],
-        })
-        .catch(() => {});
+      saveAll();
     }
   }
 );
@@ -1027,7 +1039,8 @@ async function buildAnnouncement(
     const [
       userId,
       user,
-    ] = pageUsers[i];
+    ] =
+      pageUsers[i];
 
     const guild =
       client.guilds.cache.get(
@@ -1041,7 +1054,8 @@ async function buildAnnouncement(
 
     const name =
       member?.displayName ||
-      member?.user?.username ||
+      member?.user
+        ?.username ||
       `User ${userId}`;
 
     rows.push(
@@ -1051,25 +1065,25 @@ async function buildAnnouncement(
 
   const embed =
     new EmbedBuilder()
-      .setColor(
-        0x00d4ff
-      )
+      .setColor(0x00d4ff)
       .setTitle(
         title
       )
       .setDescription(
         `**Top 100 members with most XP**\n\n` +
-        (
-          rows.length
-            ? rows.join(
-                "\n"
-              )
-            : "No XP data yet."
-        )
+          (
+            rows.length
+              ? rows.join(
+                  "\n"
+                )
+              : "No XP data yet."
+          )
       )
       .setFooter({
         text:
-          `Page ${safePage + 1}/${totalPages}`,
+          `Page ${
+            safePage + 1
+          }/${totalPages}`,
       });
 
   const row =
@@ -1106,12 +1120,8 @@ async function buildAnnouncement(
       );
 
   return {
-    embeds: [
-      embed,
-    ],
-    components: [
-      row,
-    ],
+    embeds: [embed],
+    components: [row],
   };
 }
 
@@ -1194,7 +1204,10 @@ setInterval(
     const dateKey =
       now
         .toISOString()
-        .slice(0, 10);
+        .slice(
+          0,
+          10
+        );
 
     const weekKey =
       `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}`;
@@ -1242,14 +1255,15 @@ setInterval(
 
 client.on(
   Events.InteractionCreate,
-  async (interaction) => {
+  async (
+    interaction
+  ) => {
 
-    if (!interaction.guild) {
+    if (
+      !interaction.guild
+    ) {
       return;
     }
-
-    const guildId =
-      interaction.guild.id;
 
     /* =========================
        BUTTONS
@@ -1281,7 +1295,7 @@ client.on(
 
       if (
         guildIdFromButton !==
-        guildId
+        interaction.guild.id
       ) {
         return;
       }
@@ -1366,30 +1380,18 @@ client.on(
        COMMAND COOLDOWN
     ========================= */
 
+    const cooldown =
+      checkCommandCooldown(
+        interaction
+      );
+
     if (
-      isCommandOnCooldown(
-        interaction.user.id,
-        guildId
-      )
+      cooldown > 0
     ) {
-      const remaining =
-        getRemainingCooldown(
-          interaction.user.id,
-          guildId
-        );
-
-      const seconds =
-        Math.max(
-          1,
-          Math.ceil(
-            remaining / 1000
-          )
-        );
-
       await interaction
         .reply({
           content:
-            `Please wait ${seconds}s before using another command.`,
+            `Please wait ${cooldown} second(s) before using another command.`,
           ephemeral: true,
         })
         .catch(() => {});
@@ -1397,10 +1399,8 @@ client.on(
       return;
     }
 
-    setCommandCooldown(
-      interaction.user.id,
-      guildId
-    );
+    const guildId =
+      interaction.guild.id;
 
     /* =========================
        /LEVEL
@@ -1417,7 +1417,8 @@ client.on(
         interaction.user;
 
       const member =
-        await interaction.guild.members
+        await interaction.guild
+          .members
           .fetch(
             target.id
           )
@@ -1452,12 +1453,18 @@ client.on(
         );
 
       const currentXP =
-        user.xp -
-        currentLevelXP;
+        Math.max(
+          0,
+          user.xp -
+            currentLevelXP
+        );
 
       const neededXP =
-        nextLevelXP -
-        currentLevelXP;
+        Math.max(
+          1,
+          nextLevelXP -
+            currentLevelXP
+        );
 
       const embed =
         new EmbedBuilder()
@@ -1472,36 +1479,47 @@ client.on(
           })
           .setDescription(
             `**Level ${user.level}**\n` +
-            `Rank **#${rank}**\n\n` +
-            `${progressBar(
-              currentXP,
-              neededXP
-            )}\n` +
-            `${currentXP.toFixed(2)} / ${neededXP.toFixed(2)} XP`
+              `Rank **#${rank}**\n\n` +
+              `${progressBar(
+                currentXP,
+                neededXP
+              )}\n` +
+              `${currentXP.toFixed(
+                2
+              )} / ${neededXP.toFixed(
+                2
+              )} XP`
           )
           .addFields(
             {
               name: "XP",
               value:
-                `**${user.xp.toFixed(2)}**`,
+                `**${user.xp.toFixed(
+                  2
+                )}**`,
               inline: true,
             },
             {
-              name: "Level",
+              name:
+                "Level",
               value:
                 `**${user.level}**`,
               inline: true,
             },
             {
-              name: "Messages",
+              name:
+                "Messages",
               value:
                 `**${user.messages.toLocaleString()}**`,
               inline: true,
             },
             {
-              name: "Server",
+              name:
+                "Server",
               value:
-                interaction.guild.name,
+                interaction
+                  .guild
+                  .name,
             }
           )
           .setThumbnail(
@@ -1518,7 +1536,9 @@ client.on(
             embed,
           ],
         })
-        .catch(() => {});
+        .catch(
+          () => {}
+        );
 
       return;
     }
@@ -1542,7 +1562,9 @@ client.on(
         .reply(
           announcement
         )
-        .catch(() => {});
+        .catch(
+          () => {}
+        );
 
       return;
     }
@@ -1582,7 +1604,9 @@ client.on(
               "XP announcements are now disabled.",
             ephemeral: true,
           })
-          .catch(() => {});
+          .catch(
+            () => {}
+          );
 
         return;
       }
@@ -1597,7 +1621,9 @@ client.on(
               "Please select a text channel.",
             ephemeral: true,
           })
-          .catch(() => {});
+          .catch(
+            () => {}
+          );
 
         return;
       }
@@ -1618,58 +1644,51 @@ client.on(
             `${type === "daily" ? "Daily" : "Weekly"} XP announcements are now enabled in ${channel}.`,
           ephemeral: true,
         })
-        .catch(() => {});
+        .catch(
+          () => {}
+        );
 
       return;
     }
 
     /* =========================
-       /XP-EXCLUDE
+       /ANTISPAM-CHANNEL
     ========================= */
 
     if (
       interaction.commandName ===
-      "xp-exclude"
+      "antispam-channel"
     ) {
-      const action =
-        interaction.options.getString(
-          "action",
-          true
-        );
-
       const channel =
         interaction.options.getChannel(
           "channel"
         );
 
-      if (
-        action ===
-        "off"
-      ) {
-        if (
-          settings.excludedXpChannels
-        ) {
-          delete settings
-            .excludedXpChannels[
-              guildId
-            ];
-        }
+      const config =
+        getGuildAntispam(
+          guildId
+        );
+
+      if (!channel) {
+        config.excludedChannelId =
+          null;
 
         saveAll();
 
         await interaction
           .reply({
             content:
-              "XP exclusion is now disabled.",
+              "Anti-spam channel exclusion has been disabled.",
             ephemeral: true,
           })
-          .catch(() => {});
+          .catch(
+            () => {}
+          );
 
         return;
       }
 
       if (
-        !channel ||
         !channel.isTextBased()
       ) {
         await interaction
@@ -1678,32 +1697,27 @@ client.on(
               "Please select a text channel.",
             ephemeral: true,
           })
-          .catch(() => {});
+          .catch(
+            () => {}
+          );
 
         return;
       }
 
-      if (
-        !settings.excludedXpChannels
-      ) {
-        settings.excludedXpChannels =
-          {};
-      }
-
-      settings
-        .excludedXpChannels[
-          guildId
-        ] = channel.id;
+      config.excludedChannelId =
+        channel.id;
 
       saveAll();
 
       await interaction
         .reply({
           content:
-            `XP is now disabled in ${channel}.`,
+            `Anti-spam timeouts are now disabled in ${channel}.`,
           ephemeral: true,
         })
-        .catch(() => {});
+        .catch(
+          () => {}
+        );
 
       return;
     }
@@ -1714,4 +1728,6 @@ client.on(
    LOGIN
 ========================= */
 
-client.login(TOKEN);
+client.login(
+  TOKEN
+);
