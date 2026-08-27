@@ -1,0 +1,13 @@
+{
+  "name": "my-bot1",
+  "version": "1.0.0",
+  "description": "Nexona Discord Bot",
+  "main": "Nexona.js",
+  "scripts": {
+    "start": "node Nexona.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.25.1",
+    "dotenv": "^17.2.2"
+  }
+}
