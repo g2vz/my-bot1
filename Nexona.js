@@ -24,10 +24,25 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 
 // ======================================================
+// INSTALL SYSTEMS
+// ======================================================
+
+// AutoMod
+if (automod.install) {
+    automod.install(client);
+}
+
+// Softban
+if (softban.install) {
+    softban.install(client);
+}
+
+// ======================================================
 // READY
 // ======================================================
 
 client.once("ready", async () => {
+
     console.log("--------------------------------");
     console.log("Nexona is online!");
     console.log(`Logged in as: ${client.user.tag}`);
@@ -35,18 +50,23 @@ client.once("ready", async () => {
     console.log("--------------------------------");
 
     try {
+
         const rest = new REST({
             version: "10"
         }).setToken(TOKEN);
 
-        // Get commands from both AutoMod files
+        // ==================================================
+        // ALL SLASH COMMANDS
+        // ==================================================
+
         const allCommands = [
             ...(automod.commands || []),
-            ...(automod2.commands || [])
+            ...(automod2.commands || []),
+            ...(softban.commands || [])
         ];
 
-        const commandData = allCommands.map(command =>
-            command.toJSON()
+        const commandData = allCommands.map(
+            command => command.toJSON()
         );
 
         await rest.put(
@@ -60,11 +80,25 @@ client.once("ready", async () => {
             `Registered ${commandData.length} slash commands.`
         );
 
+        // Show registered Softban commands
+        const softbanCommandNames =
+            (softban.commands || []).map(
+                command => `/${command.name}`
+            );
+
+        if (softbanCommandNames.length > 0) {
+            console.log(
+                `Softban commands: ${softbanCommandNames.join(", ")}`
+            );
+        }
+
     } catch (error) {
+
         console.error(
             "Failed to register slash commands:",
             error
         );
+
     }
 });
 
@@ -72,152 +106,220 @@ client.once("ready", async () => {
 // INTERACTIONS
 // ======================================================
 
-client.on("interactionCreate", async interaction => {
-
-    try {
-
-        // ----------------------------------------------
-        // Chat Input Commands
-        // ----------------------------------------------
-
-        if (interaction.isChatInputCommand()) {
-
-            let handled = false;
-
-            // Try automod.js
-            if (automod.handleCommand) {
-                const result =
-                    await automod.handleCommand(interaction);
-
-                if (result === true) {
-                    handled = true;
-                }
-            }
-
-            // Try automod2.js
-            if (!handled && automod2.handleInteraction) {
-                await automod2.handleInteraction(interaction);
-            }
-
-            return;
-        }
-
-        // ----------------------------------------------
-        // Modals / Buttons / Select Menus
-        // ----------------------------------------------
-
-        if (
-            interaction.isModalSubmit() ||
-            interaction.isButton() ||
-            interaction.isStringSelectMenu() ||
-            interaction.isRoleSelectMenu() ||
-            interaction.isChannelSelectMenu() ||
-            interaction.isUserSelectMenu()
-        ) {
-
-            if (automod.handleInteraction) {
-                await automod.handleInteraction(interaction);
-            }
-
-            if (
-                !interaction.replied &&
-                !interaction.deferred &&
-                automod2.handleInteraction
-            ) {
-                await automod2.handleInteraction(interaction);
-            }
-
-            return;
-        }
-
-    } catch (error) {
-
-        console.error(
-            "Interaction error:",
-            error
-        );
+client.on(
+    "interactionCreate",
+    async interaction => {
 
         try {
 
-            if (interaction.replied || interaction.deferred) {
+            // ----------------------------------------------
+            // Chat Input Commands
+            // ----------------------------------------------
 
-                await interaction.followUp({
-                    content:
-                        "Something went wrong while executing this interaction.",
-                    ephemeral: true
-                });
+            if (interaction.isChatInputCommand()) {
 
-            } else {
+                let handled = false;
 
-                await interaction.reply({
-                    content:
-                        "Something went wrong while executing this interaction.",
-                    ephemeral: true
-                });
+                // ------------------------------------------
+                // AutoMod
+                // ------------------------------------------
 
+                if (automod.handleCommand) {
+
+                    const result =
+                        await automod.handleCommand(
+                            interaction
+                        );
+
+                    if (result === true) {
+                        handled = true;
+                    }
+                }
+
+                // ------------------------------------------
+                // AutoMod 2
+                // ------------------------------------------
+
+                if (
+                    !handled &&
+                    automod2.handleInteraction
+                ) {
+
+                    await automod2.handleInteraction(
+                        interaction
+                    );
+
+                }
+
+                // ------------------------------------------
+                // Softban
+                //
+                // Softban already has its own interaction
+                // listener through softban.install(client).
+                //
+                // We do NOT handle it here again because
+                // that would cause duplicate replies.
+                // ------------------------------------------
+
+                return;
             }
 
-        } catch (replyError) {
+            // ----------------------------------------------
+            // Modals / Buttons / Select Menus
+            // ----------------------------------------------
+
+            if (
+                interaction.isModalSubmit() ||
+                interaction.isButton() ||
+                interaction.isStringSelectMenu() ||
+                interaction.isRoleSelectMenu() ||
+                interaction.isChannelSelectMenu() ||
+                interaction.isUserSelectMenu()
+            ) {
+
+                if (automod.handleInteraction) {
+
+                    await automod.handleInteraction(
+                        interaction
+                    );
+
+                }
+
+                if (
+                    !interaction.replied &&
+                    !interaction.deferred &&
+                    automod2.handleInteraction
+                ) {
+
+                    await automod2.handleInteraction(
+                        interaction
+                    );
+
+                }
+
+                return;
+            }
+
+        } catch (error) {
+
             console.error(
-                "Failed to send error response:",
-                replyError
+                "Interaction error:",
+                error
             );
+
+            try {
+
+                if (
+                    interaction.replied ||
+                    interaction.deferred
+                ) {
+
+                    await interaction.followUp({
+                        content:
+                            "Something went wrong while executing this interaction.",
+                        ephemeral: true
+                    });
+
+                } else {
+
+                    await interaction.reply({
+                        content:
+                            "Something went wrong while executing this interaction.",
+                        ephemeral: true
+                    });
+
+                }
+
+            } catch (replyError) {
+
+                console.error(
+                    "Failed to send error response:",
+                    replyError
+                );
+
+            }
         }
     }
-});
+);
 
 // ======================================================
 // MESSAGES
 // ======================================================
 
-client.on("messageCreate", async message => {
+client.on(
+    "messageCreate",
+    async message => {
 
-    try {
+        try {
 
-        // Existing AutoMod
-        if (automod.handleMessage) {
-            await automod.handleMessage(message);
+            // Existing AutoMod
+            if (automod.handleMessage) {
+
+                await automod.handleMessage(
+                    message
+                );
+
+            }
+
+            // New AutoMod 2
+            if (automod2.handleMessage) {
+
+                await automod2.handleMessage(
+                    message
+                );
+
+            }
+
+        } catch (error) {
+
+            console.error(
+                "AutoMod message error:",
+                error
+            );
+
         }
-
-        // New AutoMod 2
-        if (automod2.handleMessage) {
-            await automod2.handleMessage(message);
-        }
-
-    } catch (error) {
-
-        console.error(
-            "AutoMod message error:",
-            error
-        );
-
     }
-});
+);
 
 // ======================================================
 // ERRORS
 // ======================================================
 
-client.on("error", error => {
-    console.error(
-        "Discord Client Error:",
-        error
-    );
-});
+client.on(
+    "error",
+    error => {
 
-process.on("unhandledRejection", error => {
-    console.error(
-        "Unhandled Promise Rejection:",
-        error
-    );
-});
+        console.error(
+            "Discord Client Error:",
+            error
+        );
 
-process.on("uncaughtException", error => {
-    console.error(
-        "Uncaught Exception:",
-        error
-    );
-});
+    }
+);
+
+process.on(
+    "unhandledRejection",
+    error => {
+
+        console.error(
+            "Unhandled Promise Rejection:",
+            error
+        );
+
+    }
+);
+
+process.on(
+    "uncaughtException",
+    error => {
+
+        console.error(
+            "Uncaught Exception:",
+            error
+        );
+
+    }
+);
 
 // ======================================================
 // LOGIN
