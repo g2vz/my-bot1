@@ -28,7 +28,7 @@ const CLIENT_ID = process.env.CLIENT_ID;
 
 client.once("ready", async () => {
     console.log("--------------------------------");
-    console.log(`Nexona is online!`);
+    console.log("Nexona is online!");
     console.log(`Logged in as: ${client.user.tag}`);
     console.log(`Bot ID: ${client.user.id}`);
     console.log("--------------------------------");
@@ -38,10 +38,15 @@ client.once("ready", async () => {
             version: "10"
         }).setToken(TOKEN);
 
-        const commandData =
-            automod.commands.map(command =>
-                command.toJSON()
-            );
+        // Get commands from both AutoMod files
+        const allCommands = [
+            ...(automod.commands || []),
+            ...(automod2.commands || [])
+        ];
+
+        const commandData = allCommands.map(command =>
+            command.toJSON()
+        );
 
         await rest.put(
             Routes.applicationCommands(CLIENT_ID),
@@ -53,6 +58,7 @@ client.once("ready", async () => {
         console.log(
             `Registered ${commandData.length} slash commands.`
         );
+
     } catch (error) {
         console.error(
             "Failed to register slash commands:",
@@ -66,32 +72,95 @@ client.once("ready", async () => {
 // ======================================================
 
 client.on("interactionCreate", async interaction => {
-    if (!interaction.isChatInputCommand()) {
-        return;
-    }
 
     try {
-        await automod.handleCommand(
-            interaction
-        );
+
+        // ----------------------------------------------
+        // Chat Input Commands
+        // ----------------------------------------------
+
+        if (interaction.isChatInputCommand()) {
+
+            let handled = false;
+
+            // Try automod.js
+            if (automod.handleCommand) {
+                const result =
+                    await automod.handleCommand(interaction);
+
+                if (result === true) {
+                    handled = true;
+                }
+            }
+
+            // Try automod2.js
+            if (!handled && automod2.handleInteraction) {
+                await automod2.handleInteraction(interaction);
+            }
+
+            return;
+        }
+
+        // ----------------------------------------------
+        // Modals / Buttons / Select Menus
+        // ----------------------------------------------
+
+        if (
+            interaction.isModalSubmit() ||
+            interaction.isButton() ||
+            interaction.isStringSelectMenu() ||
+            interaction.isRoleSelectMenu() ||
+            interaction.isChannelSelectMenu() ||
+            interaction.isUserSelectMenu()
+        ) {
+
+            if (automod.handleInteraction) {
+                await automod.handleInteraction(interaction);
+            }
+
+            if (
+                !interaction.replied &&
+                !interaction.deferred &&
+                automod2.handleInteraction
+            ) {
+                await automod2.handleInteraction(interaction);
+            }
+
+            return;
+        }
+
     } catch (error) {
+
         console.error(
-            "Command error:",
+            "Interaction error:",
             error
         );
 
-        if (interaction.replied || interaction.deferred) {
-            await interaction.followUp({
-                content:
-                    "Something went wrong while executing this command.",
-                ephemeral: true
-            }).catch(() => {});
-        } else {
-            await interaction.reply({
-                content:
-                    "Something went wrong while executing this command.",
-                ephemeral: true
-            }).catch(() => {});
+        try {
+
+            if (interaction.replied || interaction.deferred) {
+
+                await interaction.followUp({
+                    content:
+                        "Something went wrong while executing this interaction.",
+                    ephemeral: true
+                });
+
+            } else {
+
+                await interaction.reply({
+                    content:
+                        "Something went wrong while executing this interaction.",
+                    ephemeral: true
+                });
+
+            }
+
+        } catch (replyError) {
+            console.error(
+                "Failed to send error response:",
+                replyError
+            );
         }
     }
 });
@@ -101,15 +170,26 @@ client.on("interactionCreate", async interaction => {
 // ======================================================
 
 client.on("messageCreate", async message => {
+
     try {
-        await automod.handleMessage(
-            message
-        );
+
+        // Existing AutoMod
+        if (automod.handleMessage) {
+            await automod.handleMessage(message);
+        }
+
+        // New AutoMod 2
+        if (automod2.handleMessage) {
+            await automod2.handleMessage(message);
+        }
+
     } catch (error) {
+
         console.error(
             "AutoMod message error:",
             error
         );
+
     }
 });
 
@@ -143,6 +223,7 @@ process.on("uncaughtException", error => {
 // ======================================================
 
 if (!TOKEN) {
+
     console.error(
         "DISCORD_TOKEN is missing."
     );
@@ -151,6 +232,7 @@ if (!TOKEN) {
 }
 
 if (!CLIENT_ID) {
+
     console.error(
         "CLIENT_ID is missing."
     );
