@@ -19,7 +19,7 @@ const client = new Client({
         GatewayIntentBits.GuildMembers
     ]
 });
-softban.install(client);
+
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 
@@ -93,11 +93,11 @@ client.once("ready", async () => {
         );
 
         for (
-            const command
-            of softban.commands || []
+            const cmdData
+            of commandData.filter(cmd => SOFTBAN_COMMANDS.includes(cmd.name))
         ) {
             console.log(
-                `  /${command.name}`
+                `  /${cmdData.name}`
             );
         }
 
@@ -376,3 +376,4 @@ if (!CLIENT_ID) {
 }
 
 client.login(TOKEN);
+
