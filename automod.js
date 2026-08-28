@@ -10,164 +10,158 @@ const {
     StringSelectMenuOptionBuilder,
     ButtonBuilder,
     ButtonStyle,
-    ChannelSelectMenuBuilder,
-    RoleSelectMenuBuilder,
     ChannelType,
     AutoModerationRuleTriggerType,
     AutoModerationRuleEventType,
     AutoModerationActionType
 } = require("discord.js");
 
+const fs = require("fs");
+const path = require("path");
+
 // ============================================================
 // NEXONA AUTOMOD
 // ============================================================
-//
-// Discord AutoMod handles blocked words BEFORE the message
-// is posted.
-//
-// Punishment profiles:
-//
-// DELETE
-// TIMEOUT
-// KICK
-// BAN
-//
-// Every profile ALWAYS includes Block Message.
-//
-// Discord AutoMod natively supports:
-// - Block Message
-// - Timeout
-//
-// Kick/Ban are handled from the AutoMod execution event,
-// after Discord has already blocked the message.
-//
-// ============================================================
 
+const OWNER_ID = "1193602200644091957";
 
-// ============================================================
-// CONSTANTS
-// ============================================================
+const DATA_FILE = path.join(
+    __dirname,
+    "automod.json"
+);
 
-const RULE_PREFIX = "NEXONA_AUTOMOD";
+const MAX_KEYWORDS = 1000;
+const MAX_TIMEOUT = 2419200; // 28 days
 
-const RULE_NAMES = {
-    delete: `${RULE_PREFIX}_DELETE`,
-    timeout: `${RULE_PREFIX}_TIMEOUT`,
-    kick: `${RULE_PREFIX}_KICK`,
-    ban: `${RULE_PREFIX}_BAN`
+const RULES = {
+    delete: "NEXONA_WORD_DELETE",
+    timeout: "NEXONA_WORD_TIMEOUT",
+    kick: "NEXONA_WORD_KICK",
+    ban: "NEXONA_WORD_BAN"
 };
 
-const MAX_KEYWORDS_PER_RULE = 1000;
-const MAX_KEYWORD_LENGTH = 60;
-const MAX_KEYWORD_RULES = 6;
-const MAX_TIMEOUT_SECONDS = 2419200;
-
-// ============================================================
-// MEMORY
-// ============================================================
-
-const guildSettings = new Map();
-
-// Installed interaction listeners.
-// This lets automod.js handle modals/select menus without
-// requiring a second command file.
-//
-// ============================================================
-
-const installedClients = new WeakSet();
+const OWNER_ROLE_NAME = "Nexona Owner";
 
 
 // ============================================================
-// DEFAULT SETTINGS
+// JSON
 // ============================================================
 
-function getSettings(guildId) {
-    if (!guildSettings.has(guildId)) {
-        guildSettings.set(guildId, {
+function defaultGuildData() {
+    return {
+        words: {},
 
-            // --------------------------------------------
-            // Default punishment for normal words
-            // --------------------------------------------
+        defaultPunishment: {
+            actions: ["delete"],
+            duration: null
+        },
 
-            wordPunishment: {
+        customPunishments: {},
+
+        antiSpam: {
+            enabled: false,
+            messages: 3,
+            seconds: 3,
+
+            punishment: {
                 actions: ["delete"],
                 duration: null
             },
 
-            // --------------------------------------------
-            // Per-word custom punishment
-            // --------------------------------------------
-
-            customWords: new Map(),
-
-            // --------------------------------------------
-            // Anti-spam
-            // --------------------------------------------
-
-            antiSpam: {
-                enabled: false,
-                messages: 3,
-                seconds: 3,
-
-                punishment: {
-                    actions: ["delete"],
-                    duration: null
-                },
-
-                bypassRoleId: null,
-
-                excludedChannelIds: new Set(),
-
-                message: {
-                    location: "dm",
-                    action: "delete",
-                    action2: "none"
-                }
+            message: {
+                location: "dm",
+                action: "delete",
+                action2: null
             },
 
-            // --------------------------------------------
-            // Block announcement DM
-            // --------------------------------------------
+            excludedChannels: [],
+            bypassRoleId: null
+        },
 
-            blockAnnouncement:
-                "hello {user}.\n\n" +
-                "your message ({word}) in {servername} have been {action}, " +
-                "please re read the rules and contact staff if the message wasn't meant to be deleted"
+        blockAnnouncement:
+            "hello {user}.\n\n" +
+            "your message ({word}) in {servername} have been {action}, " +
+            "please re read the rules and contact staff if the message wasn't meant to be deleted"
+    };
+}
 
-        });
+
+function loadData() {
+    if (!fs.existsSync(DATA_FILE)) {
+        fs.writeFileSync(
+            DATA_FILE,
+            JSON.stringify({}, null, 4)
+        );
     }
 
-    return guildSettings.get(guildId);
+    try {
+        return JSON.parse(
+            fs.readFileSync(
+                DATA_FILE,
+                "utf8"
+            )
+        );
+    } catch {
+        return {};
+    }
+}
+
+
+function saveData(data) {
+    fs.writeFileSync(
+        DATA_FILE,
+        JSON.stringify(
+            data,
+            null,
+            4
+        )
+    );
+}
+
+
+const database = loadData();
+
+
+function getGuildData(guildId) {
+    if (!database[guildId]) {
+        database[guildId] =
+            defaultGuildData();
+
+        saveData(database);
+    }
+
+    return database[guildId];
 }
 
 
 // ============================================================
-// PERMISSION CHECK
+// UTILITIES
 // ============================================================
 
-function hasManageMessages(interaction) {
+function isModerator(interaction) {
     return interaction.memberPermissions?.has(
         PermissionFlagsBits.ManageMessages
     );
 }
 
 
-// ============================================================
-// TIME PARSER
-// ============================================================
+function isOwner(userId) {
+    return userId === OWNER_ID;
+}
 
-function parseDuration(input) {
-    if (!input) return null;
 
-    const value =
-        String(input)
-            .trim()
-            .toLowerCase();
+function parseDuration(value) {
+    if (!value) {
+        return null;
+    }
 
     const match =
-        value.match(
-            /^(\d+)\s*(s|m|h|d)$/
-        );
+        String(value)
+            .trim()
+            .toLowerCase()
+            .match(
+                /^(\d+)\s*(s|m|h|d)$/
+            );
 
     if (!match) {
         return null;
@@ -191,7 +185,7 @@ function parseDuration(input) {
 
     if (
         seconds <= 0 ||
-        seconds > MAX_TIMEOUT_SECONDS
+        seconds > MAX_TIMEOUT
     ) {
         return null;
     }
@@ -200,13 +194,9 @@ function parseDuration(input) {
 }
 
 
-// ============================================================
-// FORMAT DURATION
-// ============================================================
-
 function formatDuration(seconds) {
     if (!seconds) {
-        return "Not applicable";
+        return "N/A";
     }
 
     if (seconds % 86400 === 0) {
@@ -226,110 +216,121 @@ function formatDuration(seconds) {
 
 
 // ============================================================
-// NORMALIZE ACTIONS
+// PUNISHMENT PARSER
 // ============================================================
 //
 // Examples:
 //
-// "delete"
-// "timeout"
-// "delete timeout"
-// "timeout delete"
-// "kick delete"
-// "ban delete"
+// timeout
+// delete
+// timeout + delete
+// kick
+// ban
 //
-// Delete is always automatically included.
+// Delete is ALWAYS added.
 //
 // ============================================================
 
-function parsePunishmentActions(input) {
-    if (!input) {
-        return {
-            actions: ["delete"],
-            error: null
-        };
+function parsePunishment(
+    first,
+    second
+) {
+    const actions = [];
+
+    if (first) {
+        actions.push(
+            first.toLowerCase()
+        );
     }
 
-    const tokens =
-        String(input)
-            .toLowerCase()
-            .replace(/,/g, " ")
-            .split(/\s+/)
-            .filter(Boolean);
+    if (second) {
+        actions.push(
+            second.toLowerCase()
+        );
+    }
 
-    const allowed = new Set([
+    const allowed = [
         "delete",
         "timeout",
         "kick",
         "ban"
-    ]);
+    ];
 
-    const actions = new Set();
-
-    for (const token of tokens) {
-        if (!allowed.has(token)) {
+    for (const action of actions) {
+        if (
+            !allowed.includes(
+                action
+            )
+        ) {
             return {
-                actions: null,
                 error:
-                    `Invalid punishment \`${token}\`. ` +
-                    `Use: delete, timeout, kick, or ban.`
+                    `Invalid action \`${action}\`.`
             };
         }
-
-        actions.add(token);
     }
 
-    // Delete is ALWAYS included.
-    actions.add("delete");
-
-    // Kick and ban cannot both be useful.
+    // Delete is always part of a blocked message.
     if (
-        actions.has("kick") &&
-        actions.has("ban")
+        !actions.includes(
+            "delete"
+        )
+    ) {
+        actions.push(
+            "delete"
+        );
+    }
+
+    // Remove duplicates.
+    const unique =
+        [...new Set(actions)];
+
+    // Kick + Ban makes no sense.
+    if (
+        unique.includes("kick") &&
+        unique.includes("ban")
     ) {
         return {
-            actions: null,
             error:
-                "You cannot use Kick and Ban together."
+                "Kick and Ban cannot be used together."
         };
     }
 
-    // Timeout cannot be combined with Kick/Ban.
+    // Timeout + Kick/Ban cannot be used together.
     if (
-        actions.has("timeout") &&
+        unique.includes("timeout") &&
         (
-            actions.has("kick") ||
-            actions.has("ban")
+            unique.includes("kick") ||
+            unique.includes("ban")
         )
     ) {
         return {
-            actions: null,
             error:
                 "Timeout cannot be combined with Kick or Ban."
         };
     }
 
     return {
-        actions: [...actions],
-        error: null
+        actions: unique
     };
 }
 
 
-// ============================================================
-// PROFILE FROM ACTIONS
-// ============================================================
-
-function getProfileFromActions(actions) {
-    if (actions.includes("ban")) {
+function getPrimaryAction(actions) {
+    if (
+        actions.includes("ban")
+    ) {
         return "ban";
     }
 
-    if (actions.includes("kick")) {
+    if (
+        actions.includes("kick")
+    ) {
         return "kick";
     }
 
-    if (actions.includes("timeout")) {
+    if (
+        actions.includes("timeout")
+    ) {
         return "timeout";
     }
 
@@ -337,1307 +338,404 @@ function getProfileFromActions(actions) {
 }
 
 
-// ============================================================
-// ACTION LABEL
-// ============================================================
-
-function actionLabel(profile) {
-    switch (profile) {
+function actionText(action) {
+    switch (action) {
         case "delete":
-            return "deleted";
+            return "delete";
 
         case "timeout":
-            return "timed out";
+            return "timeout";
 
         case "kick":
-            return "kicked";
+            return "kick";
 
         case "ban":
-            return "banned";
+            return "ban";
 
         default:
-            return profile;
+            return action;
     }
 }
 
 
 // ============================================================
-// GET CURRENT WORDS FROM DISCORD AUTOMOD
+// OWNER ROLE
+// ============================================================
+//
+// Discord AutoMod supports exempt roles, not exempt user IDs.
+// Nexona therefore creates a private owner role and assigns
+// it ONLY to the configured owner.
+//
+// ============================================================
+
+async function ensureOwnerRole(guild) {
+    let role =
+        guild.roles.cache.find(
+            r =>
+                r.name ===
+                OWNER_ROLE_NAME
+        );
+
+    if (!role) {
+        role =
+            await guild.roles.create({
+                name:
+                    OWNER_ROLE_NAME,
+
+                permissions: [],
+
+                reason:
+                    "Nexona AutoMod owner bypass"
+            });
+    }
+
+    const owner =
+        await guild.members
+            .fetch(
+                OWNER_ID
+            )
+            .catch(() => null);
+
+    if (owner) {
+        if (
+            !owner.roles.cache.has(
+                role.id
+            )
+        ) {
+            await owner.roles.add(
+                role,
+                "Nexona owner AutoMod bypass"
+            ).catch(() => {});
+        }
+    }
+
+    return role;
+}
+
+
+// ============================================================
+// AUTOMOD RULE FETCHING
 // ============================================================
 
 async function getNexonaRules(guild) {
-    try {
-        const rules =
-            await guild.autoModerationRules.fetch();
+    const rules =
+        await guild.autoModerationRules.fetch();
 
-        return rules.filter(rule =>
-            Object.values(RULE_NAMES)
-                .includes(rule.name)
-        );
-
-    } catch (error) {
-        console.error(
-            "Failed to fetch AutoMod rules:",
-            error
-        );
-
-        return new Map();
-    }
+    return rules.filter(
+        rule =>
+            Object.values(
+                RULES
+            ).includes(
+                rule.name
+            )
+    );
 }
 
 
-// ============================================================
-// GET PROFILE RULE
-// ============================================================
-
-async function getProfileRule(
+async function getRule(
     guild,
-    profile
+    action
 ) {
     const rules =
-        await getNexonaRules(guild);
-
-    const ruleName =
-        RULE_NAMES[profile];
+        await getNexonaRules(
+            guild
+        );
 
     return rules.find(
         rule =>
-            rule.name === ruleName
-    ) || null;
+            rule.name ===
+            RULES[action]
+    );
 }
 
 
 // ============================================================
-// GET WORDS FROM ALL NEXONA RULES
+// AUTOMOD ACTIONS
 // ============================================================
 
-async function getAllBlockedWords(guild) {
-    const rules =
-        await getNexonaRules(guild);
-
-    const result = [];
-
-    for (const rule of rules) {
-        const profile =
-            getProfileFromRuleName(
-                rule.name
-            );
-
-        const keywords =
-            rule.triggerMetadata
-                ?.keywordFilter || [];
-
-        for (const keyword of keywords) {
-            result.push({
-                word: keyword,
-                profile
-            });
-        }
-    }
-
-    return result;
-}
-
-
-// ============================================================
-// PROFILE FROM RULE NAME
-// ============================================================
-
-function getProfileFromRuleName(name) {
-    for (
-        const [profile, ruleName]
-        of Object.entries(RULE_NAMES)
-    ) {
-        if (name === ruleName) {
-            return profile;
-        }
-    }
-
-    return "delete";
-}
-
-
-// ============================================================
-// BUILD AUTOMOD ACTIONS
-// ============================================================
-
-function buildRuleActions(
-    profile,
+function buildActions(
+    action,
     duration
 ) {
     const actions = [];
 
-    // --------------------------------------------
-    // ALWAYS BLOCK THE MESSAGE
-    // --------------------------------------------
-
+    // Every word rule blocks the message.
     actions.push({
         type:
             AutoModerationActionType.BlockMessage
     });
 
-    // --------------------------------------------
-    // TIMEOUT
-    // --------------------------------------------
-
-    if (profile === "timeout") {
+    if (
+        action ===
+        "timeout"
+    ) {
         actions.push({
             type:
                 AutoModerationActionType.Timeout,
 
             metadata: {
                 durationSeconds:
-                    duration
+                    duration || 60
             }
         });
     }
-
-    // Kick/Ban are handled by the bot when the
-    // AutoMod execution event fires.
 
     return actions;
 }
 
 
 // ============================================================
-// CREATE / UPDATE PROFILE RULE
+// SYNC ONE RULE
 // ============================================================
 
-async function syncProfileRule(
+async function syncRule(
     guild,
-    profile,
-    keywords,
+    action,
+    words,
     duration
 ) {
-    if (
-        ![
-            "delete",
-            "timeout",
-            "kick",
-            "ban"
-        ].includes(profile)
-    ) {
-        return;
-    }
-
-    const cleanKeywords =
-        [...new Set(
-            keywords
-                .map(word =>
-                    String(word)
-                        .trim()
-                        .toLowerCase()
-                )
-                .filter(Boolean)
-        )];
-
-    const existing =
-        await getProfileRule(
-            guild,
-            profile
+    const ownerRole =
+        await ensureOwnerRole(
+            guild
         );
 
-    // --------------------------------------------
-    // Empty profile
-    // --------------------------------------------
+    const cleanWords =
+        [
+            ...new Set(
+                words
+                    .map(
+                        word =>
+                            String(word)
+                                .trim()
+                                .toLowerCase()
+                    )
+                    .filter(Boolean)
+            )
+        ];
 
-    if (cleanKeywords.length === 0) {
+    const existing =
+        await getRule(
+            guild,
+            action
+        );
+
+    if (
+        cleanWords.length ===
+        0
+    ) {
         if (existing) {
             await existing.delete(
-                "Nexona AutoMod profile became empty"
+                "Nexona AutoMod empty rule"
             );
         }
 
         return;
     }
 
-    // --------------------------------------------
-    // Discord max is 1000 keywords per rule.
-    // This system intentionally keeps one rule per
-    // punishment profile, so if a profile exceeds
-    // 1000 words, we stop with a clear error.
-    // --------------------------------------------
-
     if (
-        cleanKeywords.length >
-        MAX_KEYWORDS_PER_RULE
+        cleanWords.length >
+        MAX_KEYWORDS
     ) {
         throw new Error(
-            `The ${profile} AutoMod profile has more than ` +
-            `${MAX_KEYWORDS_PER_RULE} words.`
+            `${action} has more than ${MAX_KEYWORDS} words.`
         );
     }
 
-    const exemptChannels = [];
+    const options = {
+        name:
+            RULES[action],
 
-    // --------------------------------------------
-    // CREATE
-    // --------------------------------------------
+        eventType:
+            AutoModerationRuleEventType.MessageSend,
 
-    if (!existing) {
-        await guild.autoModerationRules.create({
-            name:
-                RULE_NAMES[profile],
-
-            eventType:
-                AutoModerationRuleEventType.MessageSend,
-
-            triggerType:
-                AutoModerationRuleTriggerType.Keyword,
-
-            triggerMetadata: {
-                keywordFilter:
-                    cleanKeywords
-            },
-
-            actions:
-                buildRuleActions(
-                    profile,
-                    duration
-                ),
-
-            enabled: true,
-
-            exemptChannels,
-
-            reason:
-                "Nexona AutoMod"
-        });
-
-        return;
-    }
-
-    // --------------------------------------------
-    // UPDATE
-    // --------------------------------------------
-
-    await existing.edit({
-        enabled: true,
+        triggerType:
+            AutoModerationRuleTriggerType.Keyword,
 
         triggerMetadata: {
             keywordFilter:
-                cleanKeywords
+                cleanWords
         },
 
         actions:
-            buildRuleActions(
-                profile,
+            buildActions(
+                action,
                 duration
             ),
 
-        exemptChannels,
+        enabled: true,
+
+        // OWNER BYPASS ONLY
+        exemptRoles: [
+            ownerRole.id
+        ],
 
         reason:
-            "Nexona AutoMod update"
-    });
+            "Nexona AutoMod"
+    };
+
+    if (!existing) {
+        await guild.autoModerationRules.create(
+            options
+        );
+    } else {
+        await existing.edit(
+            options
+        );
+    }
 }
 
 
 // ============================================================
-// REBUILD ALL NEXONA KEYWORD RULES
-// ============================================================
-//
-// Words are stored by profile in Discord itself.
-// This means the word list survives bot restarts.
-//
-// In-memory customWords is restored when commands are used,
-// but the actual blocked words live in Discord AutoMod.
-//
+// REBUILD WORD RULES
 // ============================================================
 
-async function rebuildKeywordRules(
+async function rebuildWordRules(
     guild
 ) {
-    const settings =
-        getSettings(guild.id);
-
-    const allWords =
-        await getAllBlockedWords(
-            guild
+    const data =
+        getGuildData(
+            guild.id
         );
 
-    const profileWords = {
+    const words =
+        data.words;
+
+    const grouped = {
         delete: [],
         timeout: [],
         kick: [],
         ban: []
     };
 
-    // Existing words stay in their current profiles.
-    for (const entry of allWords) {
-        if (
-            profileWords[entry.profile]
-        ) {
-            profileWords[
-                entry.profile
-            ].push(entry.word);
-        }
-    }
-
-    // Sync custom/default data.
-    //
-    // This function is intentionally not destructive
-    // to existing custom profiles.
-    //
     for (
-        const [word, custom]
-        of settings.customWords
+        const [
+            word,
+            info
+        ] of Object.entries(
+            words
+        )
     ) {
-        for (
-            const profile
-            of Object.keys(profileWords)
-        ) {
-            profileWords[profile] =
-                profileWords[profile]
-                    .filter(
-                        existingWord =>
-                            existingWord !== word
-                    );
-        }
-
-        const profile =
-            getProfileFromActions(
-                custom.actions
+        const action =
+            getPrimaryAction(
+                info.actions
             );
 
-        profileWords[profile].push(
+        grouped[action].push(
             word
         );
     }
 
-    // --------------------------------------------
-    // Sync
-    // --------------------------------------------
-
-    await syncProfileRule(
-        guild,
-        "delete",
-        profileWords.delete,
-        null
-    );
-
-    await syncProfileRule(
-        guild,
-        "timeout",
-        profileWords.timeout,
-        getTimeoutForProfile(
-            settings,
-            "timeout"
-        )
-    );
-
-    await syncProfileRule(
-        guild,
-        "kick",
-        profileWords.kick,
-        null
-    );
-
-    await syncProfileRule(
-        guild,
-        "ban",
-        profileWords.ban,
-        null
-    );
-}
-
-
-// ============================================================
-// GET TIMEOUT FOR PROFILE
-// ============================================================
-
-function getTimeoutForProfile(
-    settings,
-    profile
-) {
-    if (
-        profile === "timeout" &&
-        settings.wordPunishment.actions
-            .includes("timeout")
-    ) {
-        return (
-            settings.wordPunishment.duration ||
-            60
-        );
-    }
-
-    return 60;
-}
-
-
-// ============================================================
-// ADD WORDS TO DEFAULT PROFILE
-// ============================================================
-
-async function addWords(
-    guild,
-    words
-) {
-    const settings =
-        getSettings(guild.id);
-
-    const cleanWords =
-        [...new Set(
-            words
-                .map(word =>
-                    String(word)
-                        .trim()
-                        .toLowerCase()
-                )
-                .filter(Boolean)
-        )];
-
-    if (
-        cleanWords.length === 0
-    ) {
-        return {
-            added: [],
-            skipped: [],
-            error: "No valid words were provided."
-        };
-    }
-
-    const invalid =
-        cleanWords.filter(
-            word =>
-                word.length >
-                MAX_KEYWORD_LENGTH
-        );
-
-    if (invalid.length) {
-        return {
-            added: [],
-            skipped: [],
-            error:
-                `These words are longer than ${MAX_KEYWORD_LENGTH} characters:\n` +
-                invalid
-                    .slice(0, 10)
-                    .map(word =>
-                        `\`${word}\``
-                    )
-                    .join(", ")
-        };
-    }
-
-    // --------------------------------------------
-    // Current words
-    // --------------------------------------------
-
+    // Remove all Nexona rules first.
     const existing =
-        await getAllBlockedWords(
-            guild
-        );
-
-    const existingSet =
-        new Set(
-            existing.map(
-                entry =>
-                    entry.word
-            )
-        );
-
-    const newWords =
-        cleanWords.filter(
-            word =>
-                !existingSet.has(word)
-        );
-
-    const skipped =
-        cleanWords.filter(
-            word =>
-                existingSet.has(word)
-        );
-
-    if (
-        newWords.length === 0
-    ) {
-        return {
-            added: [],
-            skipped,
-            error: null
-        };
-    }
-
-    // --------------------------------------------
-    // Default punishment
-    // --------------------------------------------
-
-    const profile =
-        getProfileFromActions(
-            settings.wordPunishment.actions
-        );
-
-    const currentProfileWords =
-        existing
-            .filter(
-                entry =>
-                    entry.profile === profile
-            )
-            .map(
-                entry =>
-                    entry.word
-            );
-
-    if (
-        currentProfileWords.length +
-        newWords.length >
-        MAX_KEYWORDS_PER_RULE
-    ) {
-        return {
-            added: [],
-            skipped,
-            error:
-                `The ${profile} AutoMod rule can contain a maximum of ${MAX_KEYWORDS_PER_RULE} words.`
-        };
-    }
-
-    const duration =
-        profile === "timeout"
-            ? (
-                settings.wordPunishment.duration ||
-                60
-            )
-            : null;
-
-    await syncProfileRule(
-        guild,
-        profile,
-        [
-            ...currentProfileWords,
-            ...newWords
-        ],
-        duration
-    );
-
-    return {
-        added: newWords,
-        skipped,
-        error: null
-    };
-}
-
-
-// ============================================================
-// REMOVE WORD
-// ============================================================
-
-async function removeWord(
-    guild,
-    word
-) {
-    const cleanWord =
-        String(word)
-            .trim()
-            .toLowerCase();
-
-    const rules =
         await getNexonaRules(
             guild
         );
 
-    for (const rule of rules) {
-        const keywords =
-            [
-                ...(
-                    rule.triggerMetadata
-                        ?.keywordFilter || []
-                )
-            ];
-
-        if (
-            keywords.includes(
-                cleanWord
-            )
-        ) {
-            const updated =
-                keywords.filter(
-                    item =>
-                        item !== cleanWord
-                );
-
-            const profile =
-                getProfileFromRuleName(
-                    rule.name
-                );
-
-            const settings =
-                getSettings(
-                    guild.id
-                );
-
-            await syncProfileRule(
-                guild,
-                profile,
-                updated,
-                profile === "timeout"
-                    ? (
-                        settings.wordPunishment.duration ||
-                        60
-                    )
-                    : null
-            );
-
-            settings.customWords.delete(
-                cleanWord
-            );
-
-            return true;
-        }
+    for (
+        const rule
+        of existing
+    ) {
+        await rule.delete(
+            "Nexona AutoMod rebuild"
+        );
     }
 
-    return false;
-}
-
-
-// ============================================================
-// MOVE WORD TO CUSTOM PROFILE
-// ============================================================
-
-async function setCustomWord(
-    guild,
-    word,
-    actions,
-    duration
-) {
-    const cleanWord =
-        String(word)
-            .trim()
-            .toLowerCase();
-
-    const allWords =
-        await getAllBlockedWords(
-            guild
-        );
-
-    const found =
-        allWords.find(
-            entry =>
-                entry.word ===
-                cleanWord
-        );
-
-    if (!found) {
-        return {
-            success: false,
-            error:
-                `\`${cleanWord}\` does not exist in AutoMod. Add it first using \`/automod-add\`.`
-        };
-    }
-
-    const settings =
-        getSettings(
-            guild.id
-        );
-
-    settings.customWords.set(
-        cleanWord,
-        {
-            actions,
-            duration
-        }
-    );
-
-    // --------------------------------------------
-    // Remove it from current profile
-    // --------------------------------------------
-
-    const oldRule =
-        await getProfileRule(
-            guild,
-            found.profile
-        );
-
-    if (oldRule) {
-        const keywords =
-            [
-                ...(
-                    oldRule.triggerMetadata
-                        ?.keywordFilter || []
-                )
-            ].filter(
-                item =>
-                    item !== cleanWord
-            );
-
-        await syncProfileRule(
-            guild,
-            found.profile,
-            keywords,
-            found.profile === "timeout"
+    for (
+        const action
+        of [
+            "delete",
+            "timeout",
+            "kick",
+            "ban"
+        ]
+    ) {
+        const duration =
+            action === "timeout"
                 ? (
-                    settings.wordPunishment.duration ||
+                    data.defaultPunishment.duration ||
                     60
                 )
-                : null
-        );
-    }
+                : null;
 
-    // --------------------------------------------
-    // Add to new profile
-    // --------------------------------------------
-
-    const newProfile =
-        getProfileFromActions(
-            actions
-        );
-
-    const newRule =
-        await getProfileRule(
+        await syncRule(
             guild,
-            newProfile
-        );
-
-    const current =
-        newRule
-            ? [
-                ...(
-                    newRule.triggerMetadata
-                        ?.keywordFilter || []
-                )
-            ]
-            : [];
-
-    if (
-        !current.includes(
-            cleanWord
-        )
-    ) {
-        current.push(
-            cleanWord
+            action,
+            grouped[action],
+            duration
         );
     }
+}
 
-    await syncProfileRule(
-        guild,
-        newProfile,
-        current,
-        newProfile === "timeout"
-            ? (
-                duration ||
-                60
+
+// ============================================================
+// AUTOMOD ADD MODAL
+// ============================================================
+
+function buildAddModal() {
+    const modal =
+        new ModalBuilder()
+            .setCustomId(
+                "nexona_automod_add_modal"
             )
-            : null
-    );
-
-    return {
-        success: true,
-        error: null
-    };
-}
-
-
-// ============================================================
-// BLOCK ANNOUNCEMENT
-// ============================================================
-
-function replaceVariables(
-    text,
-    {
-        user,
-        word,
-        guild,
-        action
-    }
-) {
-    return String(text)
-        .replace(
-            /\{user\}/gi,
-            `<@${user.id}>`
-        )
-        .replace(
-            /\{word\}/gi,
-            word
-        )
-        .replace(
-            /\{servername\}/gi,
-            guild.name
-        )
-        .replace(
-            /\{action\}/gi,
-            action
-        );
-}
-
-
-// ============================================================
-// SEND BLOCK DM
-// ============================================================
-
-async function sendBlockDM(
-    execution
-) {
-    try {
-        const member =
-            execution.member ||
-            await execution.guild.members
-                .fetch(
-                    execution.userId
-                )
-                .catch(() => null);
-
-        if (!member) {
-            return;
-        }
-
-        const settings =
-            getSettings(
-                execution.guild.id
+            .setTitle(
+                "Nexona AutoMod"
             );
 
-        const word =
-            execution.matchedKeyword ||
-            execution.matchedContent ||
-            "blocked word";
-
-        const profile =
-            getProfileFromRuleName(
-                execution.autoModerationRule
-                    ?.name ||
-                ""
-            );
-
-        const action =
-            actionLabel(
-                profile
-            );
-
-        const description =
-            replaceVariables(
-                settings.blockAnnouncement,
-                {
-                    user: member.user,
-                    word,
-                    guild:
-                        execution.guild,
-                    action
-                }
-            );
-
-        const embed =
-            new EmbedBuilder()
-                .setTitle(
-                    "Nexona AutoMod"
-                )
-                .setDescription(
-                    description
-                )
-                .setFooter({
-                    text:
-                        `${execution.guild.name} auto mod`
-                })
-                .setTimestamp();
-
-        await member.send({
-            embeds: [embed]
-        });
-
-    } catch (error) {
-        // DMs can be disabled.
-    }
-}
-
-
-// ============================================================
-// APPLY KICK/BAN
-// ============================================================
-
-async function applyExternalPunishment(
-    execution,
-    profile
-) {
-    const member =
-        execution.member ||
-        await execution.guild.members
-            .fetch(
-                execution.userId
+    const input =
+        new TextInputBuilder()
+            .setCustomId(
+                "words"
             )
-            .catch(() => null);
+            .setLabel(
+                "Blocked words"
+            )
+            .setPlaceholder(
+                "word1\nword2\nword3\nword4"
+            )
+            .setStyle(
+                TextInputStyle.Paragraph
+            )
+            .setRequired(true)
+            .setMaxLength(
+                4000
+            );
 
-    if (!member) {
-        return;
-    }
+    modal.addComponents(
+        new ActionRowBuilder()
+            .addComponents(
+                input
+            )
+    );
 
-    try {
-        if (
-            profile === "kick"
-        ) {
-            if (
-                member.kickable
-            ) {
-                await member.kick(
-                    "Nexona AutoMod: blocked keyword"
-                );
-            }
-
-            return;
-        }
-
-        if (
-            profile === "ban"
-        ) {
-            if (
-                member.bannable
-            ) {
-                await member.ban({
-                    reason:
-                        "Nexona AutoMod: blocked keyword",
-                    deleteMessageSeconds: 0
-                });
-            }
-        }
-
-    } catch (error) {
-        console.error(
-            "Nexona external AutoMod punishment error:",
-            error
-        );
-    }
+    return modal;
 }
 
 
 // ============================================================
-// INTERACTION INSTALLER
-// ============================================================
-
-function installInteractionHandlers(
-    client
-) {
-    if (
-        installedClients.has(client)
-    ) {
-        return;
-    }
-
-    installedClients.add(client);
-
-    client.on(
-        "interactionCreate",
-        async interaction => {
-
-            try {
-
-                // ==================================================
-                // MODAL
-                // ==================================================
-
-                if (
-                    interaction.isModalSubmit()
-                ) {
-
-                    if (
-                        interaction.customId
-                            .startsWith(
-                                "nexona_automod_add:"
-                            )
-                    ) {
-                        if (
-                            !interaction.guild
-                        ) {
-                            return;
-                        }
-
-                        if (
-                            !hasManageMessages(
-                                interaction
-                            )
-                        ) {
-                            return interaction.reply({
-                                content:
-                                    "You need the Manage Messages permission.",
-                                ephemeral: true
-                            });
-                        }
-
-                        const input =
-                            interaction.fields
-                                .getTextInputValue(
-                                    "words"
-                                );
-
-                        const words =
-                            input
-                                .split(
-                                    /[\n,]+/
-                                )
-                                .map(
-                                    word =>
-                                        word.trim()
-                                )
-                                .filter(Boolean);
-
-                        const result =
-                            await addWords(
-                                interaction.guild,
-                                words
-                            );
-
-                        if (
-                            result.error
-                        ) {
-                            return interaction.reply({
-                                content:
-                                    result.error,
-                                ephemeral: true
-                            });
-                        }
-
-                        const embed =
-                            new EmbedBuilder()
-                                .setTitle(
-                                    "Nexona AutoMod"
-                                )
-                                .setDescription(
-                                    `Added **${result.added.length}** word(s) to Discord AutoMod.\n\n` +
-                                    `Skipped **${result.skipped.length}** existing word(s).`
-                                )
-                                .setTimestamp();
-
-                        return interaction.reply({
-                            embeds: [embed],
-                            ephemeral: true
-                        });
-                    }
-                }
-
-                // ==================================================
-                // SELECT MENUS
-                // ==================================================
-
-                if (
-                    interaction.isStringSelectMenu()
-                ) {
-
-                    // ----------------------------------------------
-                    // REMOVE WORD
-                    // ----------------------------------------------
-
-                    if (
-                        interaction.customId
-                            .startsWith(
-                                "nexona_automod_remove:"
-                            )
-                    ) {
-                        if (
-                            !hasManageMessages(
-                                interaction
-                            )
-                        ) {
-                            return interaction.reply({
-                                content:
-                                    "You need the Manage Messages permission.",
-                                ephemeral: true
-                            });
-                        }
-
-                        const word =
-                            interaction.values[0];
-
-                        const removed =
-                            await removeWord(
-                                interaction.guild,
-                                word
-                            );
-
-                        return interaction.update({
-                            embeds: [
-                                new EmbedBuilder()
-                                    .setTitle(
-                                        "Nexona AutoMod"
-                                    )
-                                    .setDescription(
-                                        removed
-                                            ? `Removed \`${word}\` from the blocked-word list.`
-                                            : `\`${word}\` was not found.`
-                                    )
-                                    .setTimestamp()
-                            ],
-                            components: []
-                        });
-                    }
-                }
-
-                // ==================================================
-                // BUTTONS
-                // ==================================================
-
-                if (
-                    interaction.isButton()
-                ) {
-
-                    if (
-                        interaction.customId
-                            .startsWith(
-                                "nexona_automod_remove_next:"
-                            )
-                    ) {
-                        if (
-                            !hasManageMessages(
-                                interaction
-                            )
-                        ) {
-                            return;
-                        }
-
-                        const page =
-                            Number(
-                                interaction.customId
-                                    .split(":")[1]
-                            );
-
-                        return showRemovePage(
-                            interaction,
-                            page
-                        );
-                    }
-
-                    if (
-                        interaction.customId
-                            .startsWith(
-                                "nexona_automod_remove_prev:"
-                            )
-                    ) {
-                        if (
-                            !hasManageMessages(
-                                interaction
-                            )
-                        ) {
-                            return;
-                        }
-
-                        const page =
-                            Number(
-                                interaction.customId
-                                    .split(":")[1]
-                            );
-
-                        return showRemovePage(
-                            interaction,
-                            page
-                        );
-                    }
-                }
-
-            } catch (error) {
-                console.error(
-                    "Nexona AutoMod component error:",
-                    error
-                );
-
-                if (
-                    !interaction.replied &&
-                    !interaction.deferred
-                ) {
-                    await interaction.reply({
-                        content:
-                            "Something went wrong while processing this AutoMod action.",
-                        ephemeral: true
-                    }).catch(() => {});
-                }
-            }
-        }
-    );
-
-    // ========================================================
-    // AUTOMOD EXECUTION
-    // ========================================================
-
-    client.on(
-        "autoModerationActionExecution",
-        async execution => {
-
-            try {
-
-                if (
-                    !execution.guild
-                ) {
-                    return;
-                }
-
-                // Only Nexona rules.
-                const rule =
-                    execution.autoModerationRule;
-
-                if (
-                    !rule ||
-                    !Object.values(
-                        RULE_NAMES
-                    ).includes(
-                        rule.name
-                    )
-                ) {
-                    return;
-                }
-
-                // We only use the BLOCK_MESSAGE
-                // execution as our single trigger.
-                //
-                // Timeout rules also fire a Timeout
-                // execution, so this prevents duplicate DMs.
-
-                if (
-                    execution.action.type !==
-                    AutoModerationActionType.BlockMessage
-                ) {
-                    return;
-                }
-
-                const profile =
-                    getProfileFromRuleName(
-                        rule.name
-                    );
-
-                // --------------------------------------------
-                // Kick / Ban
-                // --------------------------------------------
-
-                if (
-                    profile === "kick" ||
-                    profile === "ban"
-                ) {
-                    await applyExternalPunishment(
-                        execution,
-                        profile
-                    );
-                }
-
-                // --------------------------------------------
-                // DM
-                // --------------------------------------------
-
-                await sendBlockDM(
-                    execution
-                );
-
-            } catch (error) {
-                console.error(
-                    "Nexona AutoMod execution error:",
-                    error
-                );
-            }
-        }
-    );
-}
-
-
-// ============================================================
-// SHOW AUTOMOD REMOVE PAGE
+// AUTOMOD REMOVE PAGE
 // ============================================================
 
 async function showRemovePage(
     interaction,
     page = 0
 ) {
+    const data =
+        getGuildData(
+            interaction.guild.id
+        );
+
     const words =
-        await getAllBlockedWords(
-            interaction.guild
+        Object.entries(
+            data.words
         );
 
     if (
-        words.length === 0
+        words.length ===
+        0
     ) {
         return interaction.reply({
             content:
-                "There are currently no blocked words.",
+                "There are no blocked words.",
             ephemeral: true
         });
     }
@@ -1650,7 +748,7 @@ async function showRemovePage(
             pageSize
         );
 
-    const safePage =
+    page =
         Math.max(
             0,
             Math.min(
@@ -1661,51 +759,54 @@ async function showRemovePage(
 
     const pageWords =
         words.slice(
-            safePage * pageSize,
-            (safePage + 1) *
+            page * pageSize,
+            (page + 1) *
                 pageSize
         );
 
-    const select =
+    const menu =
         new StringSelectMenuBuilder()
             .setCustomId(
-                `nexona_automod_remove:${safePage}`
+                "nexona_automod_remove_select"
             )
             .setPlaceholder(
                 "Select a blocked word to remove"
             )
             .addOptions(
                 pageWords.map(
-                    entry =>
+                    ([word, info]) =>
                         new StringSelectMenuOptionBuilder()
                             .setLabel(
-                                entry.word
-                                    .slice(0, 100)
+                                word.slice(
+                                    0,
+                                    100
+                                )
                             )
                             .setDescription(
-                                `Action: ${entry.profile}`
+                                `Action: ${getPrimaryAction(info.actions)}`
                             )
                             .setValue(
-                                entry.word
+                                word
                             )
                 )
             );
 
-    const row =
+    const components = [
         new ActionRowBuilder()
             .addComponents(
-                select
-            );
+                menu
+            )
+    ];
 
     const buttons = [];
 
     if (
-        safePage > 0
+        page > 0
     ) {
         buttons.push(
             new ButtonBuilder()
                 .setCustomId(
-                    `nexona_automod_remove_prev:${safePage - 1}`
+                    `nexona_automod_remove_prev:${page - 1}`
                 )
                 .setLabel(
                     "Previous"
@@ -1717,13 +818,13 @@ async function showRemovePage(
     }
 
     if (
-        safePage <
+        page <
         totalPages - 1
     ) {
         buttons.push(
             new ButtonBuilder()
                 .setCustomId(
-                    `nexona_automod_remove_next:${safePage + 1}`
+                    `nexona_automod_remove_next:${page + 1}`
                 )
                 .setLabel(
                     "Next"
@@ -1733,9 +834,6 @@ async function showRemovePage(
                 )
         );
     }
-
-    const components =
-        [row];
 
     if (
         buttons.length
@@ -1751,11 +849,10 @@ async function showRemovePage(
     const embed =
         new EmbedBuilder()
             .setTitle(
-                "Nexona AutoMod"
+                `Nexona AutoMod`
             )
             .setDescription(
-                `Select the word you want to remove.\n\n` +
-                `Page **${safePage + 1}/${totalPages}**`
+                `Select a word to remove.\n\nPage **${page + 1}/${totalPages}**`
             )
             .setTimestamp();
 
@@ -1778,29 +875,29 @@ async function showRemovePage(
 
 
 // ============================================================
-// COMMANDS
+// COMMAND DEFINITIONS
 // ============================================================
 
 const commands = [
 
-    // ========================================================
+    // --------------------------------------------------------
     // /automod-add
-    // ========================================================
+    // --------------------------------------------------------
 
     new SlashCommandBuilder()
         .setName(
             "automod-add"
         )
         .setDescription(
-            "Open the Nexona AutoMod word manager."
+            "Open a page where you can add blocked words."
         )
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageMessages.toString()
         ),
 
-    // ========================================================
+    // --------------------------------------------------------
     // /automod-remove
-    // ========================================================
+    // --------------------------------------------------------
 
     new SlashCommandBuilder()
         .setName(
@@ -1813,1213 +910,973 @@ const commands = [
             PermissionFlagsBits.ManageMessages.toString()
         ),
 
-    // ========================================================
+    // --------------------------------------------------------
     // /automod-list
-    // ========================================================
+    // --------------------------------------------------------
 
     new SlashCommandBuilder()
         .setName(
             "automod-list"
         )
         .setDescription(
-            "Show Nexona's blocked-word list."
+            "Show all blocked words and their actions."
         )
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageMessages.toString()
         ),
 
-    // ========================================================
+    // --------------------------------------------------------
     // /punishment
-    // ========================================================
+    //
+    // /punishment spam timeout delete | for: 5m
+    //
+    // --------------------------------------------------------
 
     new SlashCommandBuilder()
         .setName(
             "punishment"
         )
         .setDescription(
-            "Configure AutoMod punishment actions."
+            "Set punishment actions."
         )
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageMessages.toString()
         )
-
-        .addStringOption(option =>
-            option
-                .setName(
-                    "action"
-                )
-                .setDescription(
-                    "What should this punishment apply to?"
-                )
-                .setRequired(true)
-                .addChoices(
-                    {
-                        name: "Spam",
-                        value: "spam"
-                    },
-                    {
-                        name: "Blocked Words",
-                        value: "words"
-                    }
-                )
+        .addStringOption(
+            option =>
+                option
+                    .setName(
+                        "target"
+                    )
+                    .setDescription(
+                        "What should this punishment apply to?"
+                    )
+                    .setRequired(true)
+                    .addChoices(
+                        {
+                            name:
+                                "Spam",
+                            value:
+                                "spam"
+                        },
+                        {
+                            name:
+                                "Blocked Words",
+                            value:
+                                "words"
+                        }
+                    )
         )
-
-        .addStringOption(option =>
-            option
-                .setName(
-                    "punishment"
-                )
-                .setDescription(
-                    "Use: delete, timeout, kick, ban. Example: delete timeout"
-                )
-                .setRequired(true)
+        .addStringOption(
+            option =>
+                option
+                    .setName(
+                        "action"
+                    )
+                    .setDescription(
+                        "First punishment."
+                    )
+                    .setRequired(true)
+                    .addChoices(
+                        {
+                            name:
+                                "Timeout",
+                            value:
+                                "timeout"
+                        },
+                        {
+                            name:
+                                "Delete",
+                            value:
+                                "delete"
+                        },
+                        {
+                            name:
+                                "Kick",
+                            value:
+                                "kick"
+                        },
+                        {
+                            name:
+                                "Ban",
+                            value:
+                                "ban"
+                        }
+                    )
         )
-
-        .addStringOption(option =>
-            option
-                .setName(
-                    "for"
-                )
-                .setDescription(
-                    "Timeout duration, e.g. 5m, 1h, 1d"
-                )
-                .setRequired(false)
+        .addStringOption(
+            option =>
+                option
+                    .setName(
+                        "action2"
+                    )
+                    .setDescription(
+                        "Optional second punishment."
+                    )
+                    .setRequired(false)
+                    .addChoices(
+                        {
+                            name:
+                                "Delete",
+                            value:
+                                "delete"
+                        },
+                        {
+                            name:
+                                "Timeout",
+                            value:
+                                "timeout"
+                        },
+                        {
+                            name:
+                                "Kick",
+                            value:
+                                "kick"
+                        },
+                        {
+                            name:
+                                "Ban",
+                            value:
+                                "ban"
+                        }
+                    )
+        )
+        .addStringOption(
+            option =>
+                option
+                    .setName(
+                        "for"
+                    )
+                    .setDescription(
+                        "Timeout duration. Example: 5m, 1h, 1d."
+                    )
+                    .setRequired(false)
         ),
 
-    // ========================================================
+    // --------------------------------------------------------
     // /custom-words
-    // ========================================================
+    // --------------------------------------------------------
 
     new SlashCommandBuilder()
         .setName(
             "custom-words"
         )
         .setDescription(
-            "Give one blocked word a custom punishment."
+            "Set a custom punishment for one blocked word."
         )
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageMessages.toString()
         )
-
-        .addStringOption(option =>
-            option
-                .setName(
-                    "word"
-                )
-                .setDescription(
-                    "Blocked word to customize."
-                )
-                .setRequired(true)
+        .addStringOption(
+            option =>
+                option
+                    .setName(
+                        "word"
+                    )
+                    .setDescription(
+                        "The word must already exist in /automod-add."
+                    )
+                    .setRequired(true)
         )
-
-        .addStringOption(option =>
-            option
-                .setName(
-                    "punishment"
-                )
-                .setDescription(
-                    "Use: delete, timeout, kick, ban. Example: delete timeout"
-                )
-                .setRequired(true)
+        .addStringOption(
+            option =>
+                option
+                    .setName(
+                        "action"
+                    )
+                    .setDescription(
+                        "First punishment."
+                    )
+                    .setRequired(true)
+                    .addChoices(
+                        {
+                            name:
+                                "Timeout",
+                            value:
+                                "timeout"
+                        },
+                        {
+                            name:
+                                "Delete",
+                            value:
+                                "delete"
+                        },
+                        {
+                            name:
+                                "Kick",
+                            value:
+                                "kick"
+                        },
+                        {
+                            name:
+                                "Ban",
+                            value:
+                                "ban"
+                        }
+                    )
         )
-
-        .addStringOption(option =>
-            option
-                .setName(
-                    "for"
-                )
-                .setDescription(
-                    "Timeout duration, e.g. 5m, 1h, 1d"
-                )
-                .setRequired(false)
+        .addStringOption(
+            option =>
+                option
+                    .setName(
+                        "action2"
+                    )
+                    .setDescription(
+                        "Optional second punishment."
+                    )
+                    .setRequired(false)
+                    .addChoices(
+                        {
+                            name:
+                                "Delete",
+                            value:
+                                "delete"
+                        },
+                        {
+                            name:
+                                "Timeout",
+                            value:
+                                "timeout"
+                        },
+                        {
+                            name:
+                                "Kick",
+                            value:
+                                "kick"
+                        },
+                        {
+                            name:
+                                "Ban",
+                            value:
+                                "ban"
+                        }
+                    )
+        )
+        .addStringOption(
+            option =>
+                option
+                    .setName(
+                        "for"
+                    )
+                    .setDescription(
+                        "Timeout duration. Example: 5m, 1h, 1d."
+                    )
+                    .setRequired(false)
         ),
 
-    // ========================================================
+    // --------------------------------------------------------
     // /block-annc
-    // ========================================================
+    // --------------------------------------------------------
 
     new SlashCommandBuilder()
         .setName(
             "block-annc"
         )
         .setDescription(
-            "Change the AutoMod blocked-message DM."
+            "Customize the blocked-word DM."
         )
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageMessages.toString()
         )
-
-        .addStringOption(option =>
-            option
-                .setName(
-                    "message"
-                )
-                .setDescription(
-                    "Variables: {user} {word} {servername} {action}"
-                )
-                .setRequired(true)
+        .addStringOption(
+            option =>
+                option
+                    .setName(
+                        "message"
+                    )
+                    .setDescription(
+                        "Variables: {user} {word} {servername} {action}"
+                    )
+                    .setRequired(true)
         ),
 
-    // ========================================================
+    // --------------------------------------------------------
     // /anti-spam
-    // ========================================================
+    // --------------------------------------------------------
 
     new SlashCommandBuilder()
         .setName(
             "anti-spam"
         )
         .setDescription(
-            "Configure Nexona's custom anti-spam."
+            "Configure Nexona anti-spam."
         )
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageMessages.toString()
         )
-
-        .addStringOption(option =>
-            option
-                .setName(
-                    "status"
-                )
-                .setDescription(
-                    "Enable or disable anti-spam."
-                )
-                .setRequired(false)
-                .addChoices(
-                    {
-                        name: "On",
-                        value: "on"
-                    },
-                    {
-                        name: "Off",
-                        value: "off"
-                    }
-                )
+        .addStringOption(
+            option =>
+                option
+                    .setName(
+                        "status"
+                    )
+                    .setDescription(
+                        "Turn anti-spam on or off."
+                    )
+                    .setRequired(false)
+                    .addChoices(
+                        {
+                            name:
+                                "On",
+                            value:
+                                "on"
+                        },
+                        {
+                            name:
+                                "Off",
+                            value:
+                                "off"
+                        }
+                    )
         )
-
-        .addIntegerOption(option =>
-            option
-                .setName(
-                    "messages"
-                )
-                .setDescription(
-                    "Number of messages."
-                )
-                .setRequired(false)
-                .setMinValue(1)
-                .setMaxValue(5)
+        .addIntegerOption(
+            option =>
+                option
+                    .setName(
+                        "messages"
+                    )
+                    .setDescription(
+                        "Messages required."
+                    )
+                    .setRequired(false)
+                    .setMinValue(1)
+                    .setMaxValue(5)
         )
-
-        .addIntegerOption(option =>
-            option
-                .setName(
-                    "seconds"
-                )
-                .setDescription(
-                    "Time window in seconds."
-                )
-                .setRequired(false)
-                .setMinValue(1)
-                .setMaxValue(5)
+        .addIntegerOption(
+            option =>
+                option
+                    .setName(
+                        "seconds"
+                    )
+                    .setDescription(
+                        "Seconds in the window."
+                    )
+                    .setRequired(false)
+                    .setMinValue(1)
+                    .setMaxValue(5)
         ),
 
-    // ========================================================
+    // --------------------------------------------------------
     // /spam-message
-    // ========================================================
+    // --------------------------------------------------------
 
     new SlashCommandBuilder()
         .setName(
             "spam-message"
         )
         .setDescription(
-            "Configure the Nexona anti-spam message."
+            "Customize the anti-spam warning."
         )
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageMessages.toString()
         )
-
-        .addStringOption(option =>
-            option
-                .setName(
-                    "location"
-                )
-                .setDescription(
-                    "Where should the spam message be sent?"
-                )
-                .setRequired(true)
-                .addChoices(
-                    {
-                        name: "DM",
-                        value: "dm"
-                    },
-                    {
-                        name: "Spam Channel",
-                        value: "channel"
-                    }
-                )
+        .addStringOption(
+            option =>
+                option
+                    .setName(
+                        "location"
+                    )
+                    .setDescription(
+                        "Where should the message be sent?"
+                    )
+                    .setRequired(true)
+                    .addChoices(
+                        {
+                            name:
+                                "DM",
+                            value:
+                                "dm"
+                        },
+                        {
+                            name:
+                                "Spam Channel",
+                            value:
+                                "channel"
+                        }
+                    )
         )
-
-        .addStringOption(option =>
-            option
-                .setName(
-                    "action"
-                )
-                .setDescription(
-                    "First action."
-                )
-                .setRequired(true)
-                .addChoices(
-                    {
-                        name: "Delete",
-                        value: "delete"
-                    },
-                    {
-                        name: "Timeout",
-                        value: "timeout"
-                    },
-                    {
-                        name: "Kick",
-                        value: "kick"
-                    },
-                    {
-                        name: "Ban",
-                        value: "ban"
-                    },
-                    {
-                        name: "None",
-                        value: "none"
-                    }
-                )
+        .addStringOption(
+            option =>
+                option
+                    .setName(
+                        "action"
+                    )
+                    .setDescription(
+                        "Optional punishment shown by the message."
+                    )
+                    .setRequired(false)
+                    .addChoices(
+                        {
+                            name:
+                                "Delete",
+                            value:
+                                "delete"
+                        },
+                        {
+                            name:
+                                "Timeout",
+                            value:
+                                "timeout"
+                        },
+                        {
+                            name:
+                                "Kick",
+                            value:
+                                "kick"
+                        },
+                        {
+                            name:
+                                "Ban",
+                            value:
+                                "ban"
+                        }
+                    )
         )
-
-        .addStringOption(option =>
-            option
-                .setName(
-                    "action2"
-                )
-                .setDescription(
-                    "Optional second action."
-                )
-                .setRequired(false)
-                .addChoices(
-                    {
-                        name: "Delete",
-                        value: "delete"
-                    },
-                    {
-                        name: "Timeout",
-                        value: "timeout"
-                    },
-                    {
-                        name: "Kick",
-                        value: "kick"
-                    },
-                    {
-                        name: "Ban",
-                        value: "ban"
-                    },
-                    {
-                        name: "None",
-                        value: "none"
-                    }
-                )
+        .addStringOption(
+            option =>
+                option
+                    .setName(
+                        "action2"
+                    )
+                    .setDescription(
+                        "Optional second punishment."
+                    )
+                    .setRequired(false)
+                    .addChoices(
+                        {
+                            name:
+                                "Delete",
+                            value:
+                                "delete"
+                        },
+                        {
+                            name:
+                                "Timeout",
+                            value:
+                                "timeout"
+                        },
+                        {
+                            name:
+                                "Kick",
+                            value:
+                                "kick"
+                        },
+                        {
+                            name:
+                                "Ban",
+                            value:
+                                "ban"
+                        }
+                    )
         ),
 
-    // ========================================================
+    // --------------------------------------------------------
     // /spam-channel
-    // ========================================================
+    // --------------------------------------------------------
 
     new SlashCommandBuilder()
         .setName(
             "spam-channel"
         )
         .setDescription(
-            "Exclude a channel from Nexona anti-spam."
+            "Enable or disable anti-spam in a channel."
         )
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageMessages.toString()
         )
-
-        .addChannelOption(option =>
-            option
-                .setName(
-                    "channel"
-                )
-                .setDescription(
-                    "Channel where anti-spam should be disabled."
-                )
-                .setRequired(true)
-                .addChannelTypes(
-                    ChannelType.GuildText,
-                    ChannelType.GuildAnnouncement,
-                    ChannelType.GuildForum,
-                    ChannelType.PublicThread,
-                    ChannelType.PrivateThread
-                )
+        .addChannelOption(
+            option =>
+                option
+                    .setName(
+                        "channel"
+                    )
+                    .setDescription(
+                        "Channel to configure."
+                    )
+                    .setRequired(true)
+                    .addChannelTypes(
+                        ChannelType.GuildText,
+                        ChannelType.GuildAnnouncement,
+                        ChannelType.PublicThread,
+                        ChannelType.PrivateThread
+                    )
         )
-
-        .addStringOption(option =>
-            option
-                .setName(
-                    "status"
-                )
-                .setDescription(
-                    "Enable or disable the exclusion."
-                )
-                .setRequired(false)
-                .addChoices(
-                    {
-                        name: "Exclude",
-                        value: "exclude"
-                    },
-                    {
-                        name: "Remove Exclusion",
-                        value: "remove"
-                    }
-                )
+        .addStringOption(
+            option =>
+                option
+                    .setName(
+                        "status"
+                    )
+                    .setDescription(
+                        "Should anti-spam work in this channel?"
+                    )
+                    .setRequired(true)
+                    .addChoices(
+                        {
+                            name:
+                                "On",
+                            value:
+                                "on"
+                        },
+                        {
+                            name:
+                                "Off",
+                            value:
+                                "off"
+                        }
+                    )
         ),
 
-    // ========================================================
+    // --------------------------------------------------------
     // /bypass-antispam
-    // ========================================================
+    // --------------------------------------------------------
 
     new SlashCommandBuilder()
         .setName(
             "bypass-antispam"
         )
         .setDescription(
-            "Choose a role that bypasses Nexona anti-spam."
+            "Set a role that bypasses anti-spam."
         )
         .setDefaultMemberPermissions(
             PermissionFlagsBits.ManageMessages.toString()
         )
+        .addRoleOption(
+            option =>
+                option
+                    .setName(
+                        "role"
+                    )
+                    .setDescription(
+                        "Role that bypasses anti-spam."
+                    )
+                    .setRequired(true)
+        ),
 
-        .addRoleOption(option =>
-            option
-                .setName(
-                    "role"
-                )
-                .setDescription(
-                    "Members with this role bypass anti-spam."
-                )
-                .setRequired(true)
+    // --------------------------------------------------------
+    // /softban-add
+    // --------------------------------------------------------
+
+    new SlashCommandBuilder()
+        .setName(
+            "softban-add"
+        )
+        .setDescription(
+            "Give a member the Nexona Softban role."
+        )
+        .setDefaultMemberPermissions(
+            PermissionFlagsBits.BanMembers.toString()
+        )
+        .addUserOption(
+            option =>
+                option
+                    .setName(
+                        "user"
+                    )
+                    .setDescription(
+                        "Member to softban."
+                    )
+                    .setRequired(true)
+        ),
+
+    // --------------------------------------------------------
+    // /softban-remove
+    // --------------------------------------------------------
+
+    new SlashCommandBuilder()
+        .setName(
+            "softban-remove"
+        )
+        .setDescription(
+            "Remove Nexona Softban from a member."
+        )
+        .setDefaultMemberPermissions(
+            PermissionFlagsBits.BanMembers.toString()
+        )
+        .addUserOption(
+            option =>
+                option
+                    .setName(
+                        "user"
+                    )
+                    .setDescription(
+                        "Member to restore."
+                    )
+                    .setRequired(true)
         )
 ];
 
 
 // ============================================================
-// COMMAND HANDLER
+// SOFTBAN
 // ============================================================
 
-async function handleCommand(
-    interaction
+async function getSoftbanRole(
+    guild
 ) {
-    if (
-        !interaction.inGuild()
-    ) {
-        return interaction.reply({
-            content:
-                "This command can only be used inside a server.",
-            ephemeral: true
-        });
+    let role =
+        guild.roles.cache.find(
+            r =>
+                r.name ===
+                "Softban"
+        );
+
+    if (!role) {
+        role =
+            await guild.roles.create({
+                name:
+                    "Softban",
+
+                permissions: [],
+
+                reason:
+                    "Nexona Softban system"
+            });
     }
 
-    if (
-        !hasManageMessages(
-            interaction
-        )
+    // Deny the role access to every existing channel.
+    for (
+        const channel
+        of guild.channels.cache.values()
     ) {
-        return interaction.reply({
-            content:
-                "You need the Manage Messages permission to use Nexona AutoMod.",
-            ephemeral: true
-        });
+        if (
+            !channel.permissionOverwrites
+        ) {
+            continue;
+        }
+
+        await channel.permissionOverwrites
+            .edit(
+                role,
+                {
+                    ViewChannel: false
+                },
+                {
+                    reason:
+                        "Nexona Softban"
+                }
+            )
+            .catch(() => {});
     }
 
-    // Install modal/select/event listeners.
-    installInteractionHandlers(
-        interaction.client
-    );
+    return role;
+}
 
-    const guild =
-        interaction.guild;
 
-    const settings =
-        getSettings(
+// ============================================================
+// SOFTBAN ADD
+// ============================================================
+
+async function softbanAdd(
+    guild,
+    member
+) {
+    const role =
+        await getSoftbanRole(
+            guild
+        );
+
+    const data =
+        getGuildData(
             guild.id
         );
 
-
-    // ========================================================
-    // /automod-add
-    // ========================================================
-
-    if (
-        interaction.commandName ===
-        "automod-add"
-    ) {
-
-        const modal =
-            new ModalBuilder()
-                .setCustomId(
-                    `nexona_automod_add:${guild.id}`
-                )
-                .setTitle(
-                    "Nexona AutoMod"
-                );
-
-        const wordsInput =
-            new TextInputBuilder()
-                .setCustomId(
-                    "words"
-                )
-                .setLabel(
-                    "Blocked words"
-                )
-                .setPlaceholder(
-                    "word1\nword2\nword3"
-                )
-                .setStyle(
-                    TextInputStyle.Paragraph
-                )
-                .setRequired(true)
-                .setMaxLength(
-                    4000
-                );
-
-        const row =
-            new ActionRowBuilder()
-                .addComponents(
-                    wordsInput
-                );
-
-        modal.addComponents(
-            row
-        );
-
-        return interaction.showModal(
-            modal
-        );
+    if (!data.softban) {
+        data.softban = {};
     }
 
-
-    // ========================================================
-    // /automod-remove
-    // ========================================================
-
-    if (
-        interaction.commandName ===
-        "automod-remove"
-    ) {
-        return showRemovePage(
-            interaction,
-            0
-        );
-    }
-
-
-    // ========================================================
-    // /automod-list
-    // ========================================================
-
-    if (
-        interaction.commandName ===
-        "automod-list"
-    ) {
-
-        const words =
-            await getAllBlockedWords(
-                guild
-            );
-
-        if (
-            words.length === 0
-        ) {
-            return interaction.reply({
-                embeds: [
-                    new EmbedBuilder()
-                        .setTitle(
-                            `list of ${guild.name}'s blocked messages`
-                        )
-                        .setDescription(
-                            "There are currently no blocked words."
-                        )
-                        .setFooter({
-                            text:
-                                guild.name
-                        })
-                ],
-                ephemeral: true
-            });
-        }
-
-        const groups = {
-            delete: [],
-            timeout: [],
-            kick: [],
-            ban: []
-        };
-
-        for (
-            const entry
-            of words
-        ) {
-            if (
-                groups[
-                    entry.profile
-                ]
-            ) {
-                groups[
-                    entry.profile
-                ].push(
-                    entry.word
-                );
-            }
-        }
-
-        let description = "";
-
-        for (
-            const profile
-            of [
-                "delete",
-                "timeout",
-                "kick",
-                "ban"
-            ]
-        ) {
-
-            if (
-                groups[profile].length ===
-                0
-            ) {
-                continue;
-            }
-
-            description +=
-                `**action: ${profile}**\n`;
-
-            description +=
-                groups[profile]
-                    .map(
-                        word =>
-                            `\`${word}\``
-                    )
-                    .join("\n");
-
-            description +=
-                "\n\n";
-        }
-
-        description +=
-            `\n**${guild.name}**`;
-
-        return interaction.reply({
-            embeds: [
-                new EmbedBuilder()
-                    .setTitle(
-                        `list of ${guild.name}'s blocked messages`
-                    )
-                    .setDescription(
-                        description
-                    )
-                    .setTimestamp()
-            ],
-            ephemeral: true
-        });
-    }
-
-
-    // ========================================================
-    // /punishment
-    // ========================================================
-
-    if (
-        interaction.commandName ===
-        "punishment"
-    ) {
-
-        const target =
-            interaction.options.getString(
-                "action"
-            );
-
-        const punishmentInput =
-            interaction.options.getString(
-                "punishment"
-            );
-
-        const durationInput =
-            interaction.options.getString(
-                "for"
-            );
-
-        const parsed =
-            parsePunishmentActions(
-                punishmentInput
-            );
-
-        if (
-            parsed.error
-        ) {
-            return interaction.reply({
-                content:
-                    parsed.error,
-                ephemeral: true
-            });
-        }
-
-        const actions =
-            parsed.actions;
-
-        const hasTimeout =
-            actions.includes(
-                "timeout"
-            );
-
-        let duration =
-            null;
-
-        if (hasTimeout) {
-
-            if (!durationInput) {
-                return interaction.reply({
-                    content:
-                        "You must provide `for` when using Timeout. Example: `5m`.",
-                    ephemeral: true
-                });
-            }
-
-            duration =
-                parseDuration(
-                    durationInput
-                );
-
-            if (!duration) {
-                return interaction.reply({
-                    content:
-                        "Invalid duration. Use `30s`, `1m`, `5m`, `1h`, or `1d`. Maximum is 28 days.",
-                    ephemeral: true
-                });
-            }
-        }
-
-        // --------------------------------------------
-        // SPAM
-        // --------------------------------------------
-
-        if (
-            target === "spam"
-        ) {
-            settings.antiSpam.punishment = {
-                actions,
-                duration
-            };
-
-            return interaction.reply({
-                embeds: [
-                    new EmbedBuilder()
-                        .setTitle(
-                            "Nexona Spam Punishment"
-                        )
-                        .setDescription(
-                            `**Actions:** ${actions.join(" + ")}\n` +
-                            `**Duration:** ${
-                                duration
-                                    ? formatDuration(
-                                        duration
-                                    )
-                                    : "Not applicable"
-                            }`
-                        )
-                        .setTimestamp()
-                ],
-                ephemeral: true
-            });
-        }
-
-        // --------------------------------------------
-        // WORDS
-        // --------------------------------------------
-
-        if (
-            target === "words"
-        ) {
-
-            settings.wordPunishment = {
-                actions,
-                duration
-            };
-
-            // Rebuild all non-custom words
-            // using the new default.
-            const allWords =
-                await getAllBlockedWords(
-                    guild
-                );
-
-            const customSet =
-                new Set(
-                    settings.customWords.keys()
-                );
-
-            const defaultWords =
-                allWords
+    if (!data.softban[member.id]) {
+        data.softban[member.id] = {
+            roles:
+                member.roles.cache
                     .filter(
-                        entry =>
-                            !customSet.has(
-                                entry.word
-                            )
+                        r =>
+                            r.id !==
+                            guild.id &&
+                            r.id !==
+                            role.id
                     )
                     .map(
-                        entry =>
-                            entry.word
-                    );
-
-            // Delete current Nexona keyword rules
-            const rules =
-                await getNexonaRules(
-                    guild
-                );
-
-            for (
-                const rule
-                of rules
-            ) {
-                await rule.delete(
-                    "Nexona AutoMod punishment profile rebuild"
-                );
-            }
-
-            const profile =
-                getProfileFromActions(
-                    actions
-                );
-
-            await syncProfileRule(
-                guild,
-                profile,
-                defaultWords,
-                duration
-            );
-
-            // Restore custom words.
-            for (
-                const [
-                    word,
-                    custom
-                ]
-                of settings.customWords
-            ) {
-                await setCustomWord(
-                    guild,
-                    word,
-                    custom.actions,
-                    custom.duration
-                );
-            }
-
-            return interaction.reply({
-                embeds: [
-                    new EmbedBuilder()
-                        .setTitle(
-                            "Nexona Word Punishment"
-                        )
-                        .setDescription(
-                            `**Actions:** ${actions.join(" + ")}\n` +
-                            `**Duration:** ${
-                                duration
-                                    ? formatDuration(
-                                        duration
-                                    )
-                                    : "Not applicable"
-                            }`
-                        )
-                        .setTimestamp()
-                ],
-                ephemeral: true
-            });
-        }
-    }
-
-
-    // ========================================================
-    // /custom-words
-    // ========================================================
-
-    if (
-        interaction.commandName ===
-        "custom-words"
-    ) {
-
-        const word =
-            interaction.options.getString(
-                "word"
-            )
-                .trim()
-                .toLowerCase();
-
-        const punishmentInput =
-            interaction.options.getString(
-                "punishment"
-            );
-
-        const durationInput =
-            interaction.options.getString(
-                "for"
-            );
-
-        const parsed =
-            parsePunishmentActions(
-                punishmentInput
-            );
-
-        if (
-            parsed.error
-        ) {
-            return interaction.reply({
-                content:
-                    parsed.error,
-                ephemeral: true
-            });
-        }
-
-        const actions =
-            parsed.actions;
-
-        let duration =
-            null;
-
-        if (
-            actions.includes(
-                "timeout"
-            )
-        ) {
-
-            if (!durationInput) {
-                return interaction.reply({
-                    content:
-                        "You must provide `for` when using Timeout.",
-                    ephemeral: true
-                });
-            }
-
-            duration =
-                parseDuration(
-                    durationInput
-                );
-
-            if (!duration) {
-                return interaction.reply({
-                    content:
-                        "Invalid duration. Example: `5m`, `1h`, `1d`.",
-                    ephemeral: true
-                });
-            }
-        }
-
-        const result =
-            await setCustomWord(
-                guild,
-                word,
-                actions,
-                duration
-            );
-
-        if (
-            !result.success
-        ) {
-            return interaction.reply({
-                content:
-                    result.error,
-                ephemeral: true
-            });
-        }
-
-        return interaction.reply({
-            embeds: [
-                new EmbedBuilder()
-                    .setTitle(
-                        "Nexona Custom Word"
+                        r =>
+                            r.id
                     )
-                    .setDescription(
-                        `\`${word}\` now uses:\n\n` +
-                        `**${actions.join(" + ")}**\n` +
-                        `**Duration:** ${
-                            duration
-                                ? formatDuration(
-                                    duration
-                                )
-                                : "Not applicable"
-                        }`
-                    )
-                    .setTimestamp()
-            ],
-            ephemeral: true
-        });
-    }
-
-
-    // ========================================================
-    // /block-annc
-    // ========================================================
-
-    if (
-        interaction.commandName ===
-        "block-annc"
-    ) {
-
-        const message =
-            interaction.options.getString(
-                "message"
-            );
-
-        settings.blockAnnouncement =
-            message;
-
-        return interaction.reply({
-            embeds: [
-                new EmbedBuilder()
-                    .setTitle(
-                        "Nexona AutoMod"
-                    )
-                    .setDescription(
-                        "The blocked-message DM has been updated."
-                    )
-                    .addFields({
-                        name:
-                            "Available variables",
-                        value:
-                            "`{user}`\n" +
-                            "`{word}`\n" +
-                            "`{servername}`\n" +
-                            "`{action}`"
-                    })
-                    .setTimestamp()
-            ],
-            ephemeral: true
-        });
-    }
-
-
-    // ========================================================
-    // /anti-spam
-    // ========================================================
-
-    if (
-        interaction.commandName ===
-        "anti-spam"
-    ) {
-
-        const status =
-            interaction.options.getString(
-                "status"
-            );
-
-        const messages =
-            interaction.options.getInteger(
-                "messages"
-            );
-
-        const seconds =
-            interaction.options.getInteger(
-                "seconds"
-            );
-
-        if (
-            status !== null
-        ) {
-            settings.antiSpam.enabled =
-                status === "on";
-        }
-
-        if (
-            messages !== null
-        ) {
-            settings.antiSpam.messages =
-                messages;
-        }
-
-        if (
-            seconds !== null
-        ) {
-            settings.antiSpam.seconds =
-                seconds;
-        }
-
-        return interaction.reply({
-            embeds: [
-                new EmbedBuilder()
-                    .setTitle(
-                        "Nexona Anti-Spam"
-                    )
-                    .setDescription(
-                        `**Status:** ${
-                            settings.antiSpam.enabled
-                                ? "ON"
-                                : "OFF"
-                        }\n` +
-                        `**Messages:** ${settings.antiSpam.messages}\n` +
-                        `**Seconds:** ${settings.antiSpam.seconds}\n\n` +
-                        `**Note:** Nexona's custom message-count threshold is handled by Nexona. Discord AutoMod's native Spam Content filter uses its own spam detection and does not expose this exact X-messages-in-Y-seconds threshold.`
-                    )
-                    .setTimestamp()
-            ],
-            ephemeral: true
-        });
-    }
-
-
-    // ========================================================
-    // /spam-message
-    // ========================================================
-
-    if (
-        interaction.commandName ===
-        "spam-message"
-    ) {
-
-        const location =
-            interaction.options.getString(
-                "location"
-            );
-
-        const action =
-            interaction.options.getString(
-                "action"
-            );
-
-        const action2 =
-            interaction.options.getString(
-                "action2"
-            ) || "none";
-
-        settings.antiSpam.message = {
-            location,
-            action,
-            action2
         };
-
-        return interaction.reply({
-            embeds: [
-                new EmbedBuilder()
-                    .setTitle(
-                        "Nexona Spam Message"
-                    )
-                    .setDescription(
-                        `**Location:** ${location}\n` +
-                        `**Action:** ${action}\n` +
-                        `**Action 2:** ${action2}`
-                    )
-                    .setTimestamp()
-            ],
-            ephemeral: true
-        });
     }
 
-
-    // ========================================================
-    // /spam-channel
-    // ========================================================
-
-    if (
-        interaction.commandName ===
-        "spam-channel"
-    ) {
-
-        const channel =
-            interaction.options.getChannel(
-                "channel"
+    // Remove every role except Softban.
+    const rolesToRemove =
+        member.roles.cache
+            .filter(
+                r =>
+                    r.id !==
+                    guild.id &&
+                    r.id !==
+                    role.id
             );
 
-        const status =
-            interaction.options.getString(
-                "status"
-            ) || "exclude";
+    for (
+        const r
+        of rolesToRemove.values()
+    ) {
+        await member.roles
+            .remove(
+                r
+            )
+            .catch(() => {});
+    }
 
-        if (
-            status === "exclude"
+    await member.roles.add(
+        role,
+        "Nexona Softban"
+    );
+
+    saveData(database);
+}
+
+
+// ============================================================
+// SOFTBAN REMOVE
+// ============================================================
+
+async function softbanRemove(
+    guild,
+    member
+) {
+    const role =
+        await getSoftbanRole(
+            guild
+        );
+
+    const data =
+        getGuildData(
+            guild.id
+        );
+
+    const saved =
+        data.softban?.[member.id];
+
+    await member.roles.remove(
+        role,
+        "Nexona Softban removal"
+    ).catch(() => {});
+
+    if (
+        saved?.roles
+    ) {
+        for (
+            const roleId
+            of saved.roles
         ) {
-            settings.antiSpam
-                .excludedChannelIds
-                .add(
-                    channel.id
+            const roleToRestore =
+                guild.roles.cache.get(
+                    roleId
                 );
-        } else {
-            settings.antiSpam
-                .excludedChannelIds
-                .delete(
-                    channel.id
-                );
-        }
 
-        return interaction.reply({
-            embeds: [
-                new EmbedBuilder()
-                    .setTitle(
-                        "Nexona Spam Channel"
+            if (
+                roleToRestore &&
+                roleToRestore.editable
+            ) {
+                await member.roles
+                    .add(
+                        roleToRestore
                     )
-                    .setDescription(
-                        status === "exclude"
-                            ? `${channel} is now excluded from anti-spam.`
-                            : `${channel} is no longer excluded from anti-spam.`
-                    )
-                    .setTimestamp()
-            ],
-            ephemeral: true
-        });
+                    .catch(() => {});
+            }
+        }
     }
 
+    if (
+        data.softban
+    ) {
+        delete data.softban[
+            member.id
+        ];
+    }
 
-    // ========================================================
-    // /bypass-antispam
-    // ========================================================
+    saveData(database);
+}
+
+
+// ============================================================
+// BLOCK DM
+// ============================================================
+
+function buildBlockMessage(
+    template,
+    member,
+    guild,
+    word,
+    action
+) {
+    return String(template)
+        .replace(
+            /\{user\}/gi,
+            `<@${member.id}>`
+        )
+        .replace(
+            /\{word\}/gi,
+            word
+        )
+        .replace(
+            /\{servername\}/gi,
+            guild.name
+        )
+        .replace(
+            /\{action\}/gi,
+            action
+        );
+}
+
+
+async function sendBlockDM(
+    execution
+) {
+    const guild =
+        execution.guild;
+
+    const member =
+        await guild.members
+            .fetch(
+                execution.userId
+            )
+            .catch(() => null);
+
+    if (!member) {
+        return;
+    }
+
+    const data =
+        getGuildData(
+            guild.id
+        );
+
+    const ruleName =
+        execution.autoModerationRule
+            ?.name;
+
+    let action =
+        "delete";
 
     if (
-        interaction.commandName ===
-        "bypass-antispam"
+        ruleName ===
+        RULES.timeout
     ) {
+        action =
+            "timeout";
+    }
 
-        const role =
-            interaction.options.getRole(
-                "role"
-            );
+    if (
+        ruleName ===
+        RULES.kick
+    ) {
+        action =
+            "kick";
+    }
 
-        settings.antiSpam
-            .bypassRoleId =
-            role.id;
+    if (
+        ruleName ===
+        RULES.ban
+    ) {
+        action =
+            "ban";
+    }
 
-        return interaction.reply({
-            embeds: [
-                new EmbedBuilder()
-                    .setTitle(
-                        "Nexona Anti-Spam Bypass"
-                    )
-                    .setDescription(
-                        `Members with ${role} will now bypass Nexona anti-spam.`
-                    )
-                    .setTimestamp()
-            ],
-            ephemeral: true
-        });
+    const word =
+        execution.matchedKeyword ||
+        "blocked word";
+
+    const message =
+        buildBlockMessage(
+            data.blockAnnouncement,
+            member,
+            guild,
+            word,
+            action
+        );
+
+    const embed =
+        new EmbedBuilder()
+            .setTitle(
+                "Nexona AutoMod"
+            )
+            .setDescription(
+                message
+            )
+            .setFooter({
+                text:
+                    `${guild.name} auto mod`
+            })
+            .setTimestamp();
+
+    await member.send({
+        embeds: [embed]
+    }).catch(() => {});
+}
+
+
+// ============================================================
+// KICK / BAN FROM AUTOMOD
+// ============================================================
+
+async function executeExternalPunishment(
+    execution
+) {
+    const guild =
+        execution.guild;
+
+    const member =
+        await guild.members
+            .fetch(
+                execution.userId
+            )
+            .catch(() => null);
+
+    if (!member) {
+        return;
+    }
+
+    const ruleName =
+        execution.autoModerationRule
+            ?.name;
+
+    if (
+        ruleName ===
+        RULES.kick
+    ) {
+        if (
+            member.kickable
+        ) {
+            await member.kick(
+                "Nexona AutoMod"
+            ).catch(() => {});
+        }
+    }
+
+    if (
+        ruleName ===
+        RULES.ban
+    ) {
+        if (
+            member.bannable
+        ) {
+            await member.ban({
+                reason:
+                    "Nexona AutoMod"
+            }).catch(() => {});
+        }
     }
 }
 
 
 // ============================================================
-// CUSTOM MESSAGE HANDLER
-// ============================================================
-//
-// IMPORTANT:
-// Discord AutoMod handles keyword blocking itself.
-// This message handler is ONLY for Nexona's custom
-// X-messages-in-Y-seconds anti-spam.
-//
+// CUSTOM ANTI-SPAM
 // ============================================================
 
-const spamTrackers =
+const spamTracker =
     new Map();
 
-function getTracker(
+
+function getSpamTracker(
     guildId,
     userId
 ) {
@@ -3027,15 +1884,17 @@ function getTracker(
         `${guildId}:${userId}`;
 
     if (
-        !spamTrackers.has(key)
+        !spamTracker.has(
+            key
+        )
     ) {
-        spamTrackers.set(
+        spamTracker.set(
             key,
             []
         );
     }
 
-    return spamTrackers.get(
+    return spamTracker.get(
         key
     );
 }
@@ -3051,53 +1910,50 @@ async function handleMessage(
         return;
     }
 
-    const settings =
-        getSettings(
-            message.guild.id
-        );
-
-    const antiSpam =
-        settings.antiSpam;
-
+    // Owner is NEVER affected.
     if (
-        !antiSpam.enabled
-    ) {
-        return;
-    }
-
-    // --------------------------------------------
-    // Excluded channel
-    // --------------------------------------------
-
-    if (
-        antiSpam
-            .excludedChannelIds
-            .has(
-                message.channel.id
-            )
-    ) {
-        return;
-    }
-
-    // --------------------------------------------
-    // Bypass role
-    // --------------------------------------------
-
-    if (
-        antiSpam.bypassRoleId &&
-        message.member?.roles.cache.has(
-            antiSpam.bypassRoleId
+        isOwner(
+            message.author.id
         )
     ) {
         return;
     }
 
-    // --------------------------------------------
-    // Track messages
-    // --------------------------------------------
+    const data =
+        getGuildData(
+            message.guild.id
+        );
+
+    const spam =
+        data.antiSpam;
+
+    if (
+        !spam.enabled
+    ) {
+        return;
+    }
+
+    // Channel OFF
+    if (
+        spam.excludedChannels.includes(
+            message.channel.id
+        )
+    ) {
+        return;
+    }
+
+    // Role bypass
+    if (
+        spam.bypassRoleId &&
+        message.member?.roles.cache.has(
+            spam.bypassRoleId
+        )
+    ) {
+        return;
+    }
 
     const tracker =
-        getTracker(
+        getSpamTracker(
             message.guild.id,
             message.author.id
         );
@@ -3110,7 +1966,7 @@ async function handleMessage(
     );
 
     const windowMs =
-        antiSpam.seconds *
+        spam.seconds *
         1000;
 
     while (
@@ -3123,42 +1979,30 @@ async function handleMessage(
 
     if (
         tracker.length <
-        antiSpam.messages
+        spam.messages
     ) {
         return;
     }
 
-    // --------------------------------------------
-    // Clear tracker
-    // --------------------------------------------
-
+    // Reset.
     tracker.length = 0;
 
     // --------------------------------------------
-    // IMPORTANT:
-    // Delete the message immediately.
-    //
-    // This custom anti-spam system cannot prevent
-    // the message from appearing because Discord
-    // has already delivered MESSAGE_CREATE.
-    // Keyword AutoMod does prevent posting.
+    // Delete spam message
     // --------------------------------------------
 
     await message.delete()
         .catch(() => {});
 
     const punishment =
-        antiSpam.punishment;
-
-    const actions =
-        punishment.actions;
+        spam.punishment;
 
     // --------------------------------------------
     // Timeout
     // --------------------------------------------
 
     if (
-        actions.includes(
+        punishment.actions.includes(
             "timeout"
         )
     ) {
@@ -3180,7 +2024,7 @@ async function handleMessage(
     // --------------------------------------------
 
     if (
-        actions.includes(
+        punishment.actions.includes(
             "kick"
         )
     ) {
@@ -3200,7 +2044,7 @@ async function handleMessage(
     // --------------------------------------------
 
     if (
-        actions.includes(
+        punishment.actions.includes(
             "ban"
         )
     ) {
@@ -3217,26 +2061,26 @@ async function handleMessage(
     }
 
     // --------------------------------------------
-    // Spam announcement
+    // Spam message
     // --------------------------------------------
 
-    await sendSpamAnnouncement(
+    await sendSpamMessage(
         message,
-        settings
+        data
     );
 }
 
 
 // ============================================================
-// SPAM ANNOUNCEMENT
+// SPAM MESSAGE
 // ============================================================
 
-async function sendSpamAnnouncement(
+async function sendSpamMessage(
     message,
-    settings
+    data
 ) {
     const config =
-        settings.antiSpam.message;
+        data.antiSpam.message;
 
     const embed =
         new EmbedBuilder()
@@ -3252,40 +2096,1303 @@ async function sendSpamAnnouncement(
             })
             .setTimestamp();
 
-    try {
-
-        if (
-            config.location ===
-            "dm"
-        ) {
-            await message.author.send({
+    if (
+        config.location ===
+        "dm"
+    ) {
+        await message.author
+            .send({
                 embeds: [embed]
-            });
+            })
+            .catch(() => {});
 
-        } else {
-
-            await message.channel.send({
-                content:
-                    `<@${message.author.id}>`,
-                embeds: [embed]
-            });
-
-        }
-
-    } catch {
-        // Ignore blocked DMs / unavailable channel.
+        return;
     }
+
+    await message.channel
+        .send({
+            content:
+                `<@${message.author.id}>`,
+            embeds: [embed]
+        })
+        .catch(() => {});
 }
 
 
 // ============================================================
-// EXPORTS
+// INTERACTION HANDLER
+// ============================================================
+
+function install(client) {
+
+    if (
+        client.__nexonaAutomodInstalled
+    ) {
+        return;
+    }
+
+    client.__nexonaAutomodInstalled =
+        true;
+
+
+    // ========================================================
+    // INTERACTIONS
+    // ========================================================
+
+    client.on(
+        "interactionCreate",
+        async interaction => {
+
+            try {
+
+                // ------------------------------------------------
+                // MODALS
+                // ------------------------------------------------
+
+                if (
+                    interaction.isModalSubmit()
+                ) {
+
+                    if (
+                        interaction.customId ===
+                        "nexona_automod_add_modal"
+                    ) {
+
+                        if (
+                            !interaction.guild ||
+                            !isModerator(
+                                interaction
+                            )
+                        ) {
+                            return;
+                        }
+
+                        const data =
+                            getGuildData(
+                                interaction.guild.id
+                            );
+
+                        const input =
+                            interaction.fields
+                                .getTextInputValue(
+                                    "words"
+                                );
+
+                        const words =
+                            input
+                                .split(
+                                    /[\n,]+/
+                                )
+                                .map(
+                                    word =>
+                                        word
+                                            .trim()
+                                            .toLowerCase()
+                                )
+                                .filter(Boolean);
+
+                        let added = 0;
+                        let skipped = 0;
+
+                        for (
+                            const word
+                            of words
+                        ) {
+
+                            if (
+                                data.words[word]
+                            ) {
+                                skipped++;
+                                continue;
+                            }
+
+                            data.words[word] = {
+                                actions:
+                                    [
+                                        ...data
+                                            .defaultPunishment
+                                            .actions
+                                    ],
+
+                                duration:
+                                    data
+                                        .defaultPunishment
+                                        .duration
+                            };
+
+                            added++;
+                        }
+
+                        saveData(
+                            database
+                        );
+
+                        try {
+                            await rebuildWordRules(
+                                interaction.guild
+                            );
+                        } catch (error) {
+                            console.error(
+                                "AutoMod rebuild error:",
+                                error
+                            );
+
+                            return interaction.reply({
+                                content:
+                                    `Words were saved, but Discord AutoMod could not update the rules.\n\n${error.message}`,
+                                ephemeral: true
+                            });
+                        }
+
+                        return interaction.reply({
+                            embeds: [
+                                new EmbedBuilder()
+                                    .setTitle(
+                                        "Nexona AutoMod"
+                                    )
+                                    .setDescription(
+                                        `Added **${added}** word(s).\nSkipped **${skipped}** existing word(s).`
+                                    )
+                                    .setTimestamp()
+                            ],
+                            ephemeral: true
+                        });
+                    }
+
+                    return;
+                }
+
+
+                // ------------------------------------------------
+                // SELECT MENUS
+                // ------------------------------------------------
+
+                if (
+                    interaction.isStringSelectMenu()
+                ) {
+
+                    if (
+                        interaction.customId ===
+                        "nexona_automod_remove_select"
+                    ) {
+
+                        if (
+                            !isModerator(
+                                interaction
+                            )
+                        ) {
+                            return interaction.reply({
+                                content:
+                                    "You need Manage Messages.",
+                                ephemeral: true
+                            });
+                        }
+
+                        const word =
+                            interaction.values[0];
+
+                        const data =
+                            getGuildData(
+                                interaction.guild.id
+                            );
+
+                        delete data.words[word];
+
+                        delete data.customPunishments?.[word];
+
+                        saveData(
+                            database
+                        );
+
+                        await rebuildWordRules(
+                            interaction.guild
+                        );
+
+                        return interaction.update({
+                            embeds: [
+                                new EmbedBuilder()
+                                    .setTitle(
+                                        "Nexona AutoMod"
+                                    )
+                                    .setDescription(
+                                        `Removed \`${word}\` from the blocked words.`
+                                    )
+                                    .setTimestamp()
+                            ],
+                            components: []
+                        });
+                    }
+
+                    return;
+                }
+
+
+                // ------------------------------------------------
+                // BUTTONS
+                // ------------------------------------------------
+
+                if (
+                    interaction.isButton()
+                ) {
+
+                    if (
+                        interaction.customId
+                            .startsWith(
+                                "nexona_automod_remove_prev:"
+                            )
+                    ) {
+
+                        const page =
+                            Number(
+                                interaction.customId
+                                    .split(":")[1]
+                            );
+
+                        return showRemovePage(
+                            interaction,
+                            page
+                        );
+                    }
+
+                    if (
+                        interaction.customId
+                            .startsWith(
+                                "nexona_automod_remove_next:"
+                            )
+                    ) {
+
+                        const page =
+                            Number(
+                                interaction.customId
+                                    .split(":")[1]
+                            );
+
+                        return showRemovePage(
+                            interaction,
+                            page
+                        );
+                    }
+                }
+
+
+                // ------------------------------------------------
+                // SLASH COMMANDS
+                // ------------------------------------------------
+
+                if (
+                    !interaction.isChatInputCommand()
+                ) {
+                    return;
+                }
+
+                if (
+                    !interaction.guild
+                ) {
+                    return;
+                }
+
+                // Softban permissions are different.
+                if (
+                    (
+                        interaction.commandName ===
+                            "softban-add" ||
+                        interaction.commandName ===
+                            "softban-remove"
+                    )
+                ) {
+
+                    if (
+                        !interaction.memberPermissions?.has(
+                            PermissionFlagsBits.BanMembers
+                        )
+                    ) {
+                        return interaction.reply({
+                            content:
+                                "You need the Ban Members permission.",
+                            ephemeral: true
+                        });
+                    }
+
+                } else {
+
+                    if (
+                        !isModerator(
+                            interaction
+                        )
+                    ) {
+                        return interaction.reply({
+                            content:
+                                "You need the Manage Messages permission.",
+                            ephemeral: true
+                        });
+                    }
+                }
+
+
+                const data =
+                    getGuildData(
+                        interaction.guild.id
+                    );
+
+
+                // =================================================
+                // AUTOMOD ADD
+                // =================================================
+
+                if (
+                    interaction.commandName ===
+                    "automod-add"
+                ) {
+
+                    return interaction.showModal(
+                        buildAddModal()
+                    );
+                }
+
+
+                // =================================================
+                // AUTOMOD REMOVE
+                // =================================================
+
+                if (
+                    interaction.commandName ===
+                    "automod-remove"
+                ) {
+
+                    return showRemovePage(
+                        interaction,
+                        0
+                    );
+                }
+
+
+                // =================================================
+                // AUTOMOD LIST
+                // =================================================
+
+                if (
+                    interaction.commandName ===
+                    "automod-list"
+                ) {
+
+                    const groups = {
+                        delete: [],
+                        timeout: [],
+                        kick: [],
+                        ban: []
+                    };
+
+                    for (
+                        const [
+                            word,
+                            info
+                        ]
+                        of Object.entries(
+                            data.words
+                        )
+                    ) {
+
+                        const action =
+                            getPrimaryAction(
+                                info.actions
+                            );
+
+                        groups[action].push(
+                            word
+                        );
+                    }
+
+                    let description =
+                        `list of ${interaction.guild.name}'s blocked messages\n\n`;
+
+                    for (
+                        const action
+                        of [
+                            "delete",
+                            "timeout",
+                            "kick",
+                            "ban"
+                        ]
+                    ) {
+
+                        if (
+                            groups[action]
+                                .length ===
+                            0
+                        ) {
+                            continue;
+                        }
+
+                        description +=
+                            `**\`action: ${action}\`**\n`;
+
+                        description +=
+                            groups[action]
+                                .map(
+                                    word =>
+                                        `\`${word}\``
+                                )
+                                .join("\n");
+
+                        description +=
+                            "\n\n";
+                    }
+
+                    description +=
+                        `\n**${interaction.guild.name}**`;
+
+                    return interaction.reply({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setTitle(
+                                    `list of ${interaction.guild.name}'s blocked messages`
+                                )
+                                .setDescription(
+                                    description
+                                )
+                                .setTimestamp()
+                        ],
+                        ephemeral: true
+                    });
+                }
+
+
+                // =================================================
+                // PUNISHMENT
+                // =================================================
+
+                if (
+                    interaction.commandName ===
+                    "punishment"
+                ) {
+
+                    const target =
+                        interaction.options
+                            .getString(
+                                "target"
+                            );
+
+                    const first =
+                        interaction.options
+                            .getString(
+                                "action"
+                            );
+
+                    const second =
+                        interaction.options
+                            .getString(
+                                "action2"
+                            );
+
+                    const durationText =
+                        interaction.options
+                            .getString(
+                                "for"
+                            );
+
+                    const parsed =
+                        parsePunishment(
+                            first,
+                            second
+                        );
+
+                    if (
+                        parsed.error
+                    ) {
+                        return interaction.reply({
+                            content:
+                                parsed.error,
+                            ephemeral: true
+                        });
+                    }
+
+                    const actions =
+                        parsed.actions;
+
+                    let duration =
+                        null;
+
+                    if (
+                        actions.includes(
+                            "timeout"
+                        )
+                    ) {
+
+                        if (
+                            !durationText
+                        ) {
+                            return interaction.reply({
+                                content:
+                                    "Timeout requires `for`. Example: `for: 5m`.",
+                                ephemeral: true
+                            });
+                        }
+
+                        duration =
+                            parseDuration(
+                                durationText
+                            );
+
+                        if (
+                            !duration
+                        ) {
+                            return interaction.reply({
+                                content:
+                                    "Invalid timeout. Use 30s, 1m, 5m, 1h, 1d, etc. Maximum is 28 days.",
+                                ephemeral: true
+                            });
+                        }
+                    }
+
+                    // ---------------------------------------------
+                    // SPAM
+                    // ---------------------------------------------
+
+                    if (
+                        target ===
+                        "spam"
+                    ) {
+
+                        data.antiSpam
+                            .punishment = {
+                                actions,
+                                duration
+                            };
+
+                        saveData(
+                            database
+                        );
+
+                        return interaction.reply({
+                            embeds: [
+                                new EmbedBuilder()
+                                    .setTitle(
+                                        "Nexona Spam Punishment"
+                                    )
+                                    .setDescription(
+                                        `**Actions:** ${actions.join(" + ")}\n` +
+                                        `**Duration:** ${formatDuration(duration)}`
+                                    )
+                                    .setTimestamp()
+                            ],
+                            ephemeral: true
+                        });
+                    }
+
+                    // ---------------------------------------------
+                    // BLOCKED WORDS
+                    // ---------------------------------------------
+
+                    if (
+                        target ===
+                        "words"
+                    ) {
+
+                        data.defaultPunishment = {
+                            actions,
+                            duration
+                        };
+
+                        // Change all normal words.
+                        for (
+                            const [
+                                word,
+                                info
+                            ]
+                            of Object.entries(
+                                data.words
+                            )
+                        ) {
+
+                            if (
+                                data.customPunishments[word]
+                            ) {
+                                continue;
+                            }
+
+                            data.words[word] = {
+                                actions:
+                                    [...actions],
+
+                                duration
+                            };
+                        }
+
+                        saveData(
+                            database
+                        );
+
+                        await rebuildWordRules(
+                            interaction.guild
+                        );
+
+                        return interaction.reply({
+                            embeds: [
+                                new EmbedBuilder()
+                                    .setTitle(
+                                        "Nexona AutoMod Punishment"
+                                    )
+                                    .setDescription(
+                                        `**Actions:** ${actions.join(" + ")}\n` +
+                                        `**Duration:** ${formatDuration(duration)}`
+                                    )
+                                    .setTimestamp()
+                            ],
+                            ephemeral: true
+                        });
+                    }
+                }
+
+
+                // =================================================
+                // CUSTOM WORDS
+                // =================================================
+
+                if (
+                    interaction.commandName ===
+                    "custom-words"
+                ) {
+
+                    const word =
+                        interaction.options
+                            .getString(
+                                "word"
+                            )
+                            .trim()
+                            .toLowerCase();
+
+                    if (
+                        !data.words[word]
+                    ) {
+                        return interaction.reply({
+                            content:
+                                `\`${word}\` does not exist. Add it first using /automod-add.`,
+                            ephemeral: true
+                        });
+                    }
+
+                    const first =
+                        interaction.options
+                            .getString(
+                                "action"
+                            );
+
+                    const second =
+                        interaction.options
+                            .getString(
+                                "action2"
+                            );
+
+                    const durationText =
+                        interaction.options
+                            .getString(
+                                "for"
+                            );
+
+                    const parsed =
+                        parsePunishment(
+                            first,
+                            second
+                        );
+
+                    if (
+                        parsed.error
+                    ) {
+                        return interaction.reply({
+                            content:
+                                parsed.error,
+                            ephemeral: true
+                        });
+                    }
+
+                    let duration =
+                        null;
+
+                    if (
+                        parsed.actions.includes(
+                            "timeout"
+                        )
+                    ) {
+
+                        if (
+                            !durationText
+                        ) {
+                            return interaction.reply({
+                                content:
+                                    "Timeout requires `for`.",
+                                ephemeral: true
+                            });
+                        }
+
+                        duration =
+                            parseDuration(
+                                durationText
+                            );
+
+                        if (
+                            !duration
+                        ) {
+                            return interaction.reply({
+                                content:
+                                    "Invalid timeout duration.",
+                                ephemeral: true
+                            });
+                        }
+                    }
+
+                    data.words[word] = {
+                        actions:
+                            parsed.actions,
+
+                        duration
+                    };
+
+                    data.customPunishments[word] = {
+                        actions:
+                            parsed.actions,
+
+                        duration
+                    };
+
+                    saveData(
+                        database
+                    );
+
+                    await rebuildWordRules(
+                        interaction.guild
+                    );
+
+                    return interaction.reply({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setTitle(
+                                    "Nexona Custom Word"
+                                )
+                                .setDescription(
+                                    `\`${word}\`\n\n` +
+                                    `**Action:** ${parsed.actions.join(" + ")}\n` +
+                                    `**Duration:** ${formatDuration(duration)}`
+                                )
+                                .setTimestamp()
+                        ],
+                        ephemeral: true
+                    });
+                }
+
+
+                // =================================================
+                // BLOCK ANNC
+                // =================================================
+
+                if (
+                    interaction.commandName ===
+                    "block-annc"
+                ) {
+
+                    const message =
+                        interaction.options
+                            .getString(
+                                "message"
+                            );
+
+                    data.blockAnnouncement =
+                        message;
+
+                    saveData(
+                        database
+                    );
+
+                    return interaction.reply({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setTitle(
+                                    "Nexona AutoMod"
+                                )
+                                .setDescription(
+                                    "The blocked-message DM has been updated."
+                                )
+                                .addFields({
+                                    name:
+                                        "Available variables",
+                                    value:
+                                        "`{user}`\n" +
+                                        "`{word}`\n" +
+                                        "`{servername}`\n" +
+                                        "`{action}`"
+                                })
+                                .setTimestamp()
+                        ],
+                        ephemeral: true
+                    });
+                }
+
+
+                // =================================================
+                // ANTI-SPAM
+                // =================================================
+
+                if (
+                    interaction.commandName ===
+                    "anti-spam"
+                ) {
+
+                    const status =
+                        interaction.options
+                            .getString(
+                                "status"
+                            );
+
+                    const messages =
+                        interaction.options
+                            .getInteger(
+                                "messages"
+                            );
+
+                    const seconds =
+                        interaction.options
+                            .getInteger(
+                                "seconds"
+                            );
+
+                    if (
+                        status !==
+                        null
+                    ) {
+                        data.antiSpam.enabled =
+                            status ===
+                            "on";
+                    }
+
+                    if (
+                        messages !==
+                        null
+                    ) {
+                        data.antiSpam.messages =
+                            messages;
+                    }
+
+                    if (
+                        seconds !==
+                        null
+                    ) {
+                        data.antiSpam.seconds =
+                            seconds;
+                    }
+
+                    saveData(
+                        database
+                    );
+
+                    return interaction.reply({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setTitle(
+                                    "Nexona Anti-Spam"
+                                )
+                                .setDescription(
+                                    `**Status:** ${data.antiSpam.enabled ? "ON" : "OFF"}\n` +
+                                    `**Messages:** ${data.antiSpam.messages}\n` +
+                                    `**Seconds:** ${data.antiSpam.seconds}`
+                                )
+                                .setTimestamp()
+                        ],
+                        ephemeral: true
+                    });
+                }
+
+
+                // =================================================
+                // SPAM MESSAGE
+                // =================================================
+
+                if (
+                    interaction.commandName ===
+                    "spam-message"
+                ) {
+
+                    const location =
+                        interaction.options
+                            .getString(
+                                "location"
+                            );
+
+                    const action =
+                        interaction.options
+                            .getString(
+                                "action"
+                            );
+
+                    const action2 =
+                        interaction.options
+                            .getString(
+                                "action2"
+                            );
+
+                    data.antiSpam.message = {
+                        location,
+                        action:
+                            action ||
+                            "delete",
+                        action2:
+                            action2 ||
+                            null
+                    };
+
+                    saveData(
+                        database
+                    );
+
+                    return interaction.reply({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setTitle(
+                                    "Nexona Spam Message"
+                                )
+                                .setDescription(
+                                    `**Location:** ${location}\n` +
+                                    `**Action:** ${action || "delete"}\n` +
+                                    `**Action 2:** ${action2 || "None"}`
+                                )
+                                .setTimestamp()
+                        ],
+                        ephemeral: true
+                    });
+                }
+
+
+                // =================================================
+                // SPAM CHANNEL
+                // =================================================
+
+                if (
+                    interaction.commandName ===
+                    "spam-channel"
+                ) {
+
+                    const channel =
+                        interaction.options
+                            .getChannel(
+                                "channel"
+                            );
+
+                    const status =
+                        interaction.options
+                            .getString(
+                                "status"
+                            );
+
+                    const list =
+                        data.antiSpam
+                            .excludedChannels;
+
+                    if (
+                        status ===
+                        "off"
+                    ) {
+
+                        if (
+                            !list.includes(
+                                channel.id
+                            )
+                        ) {
+                            list.push(
+                                channel.id
+                            );
+                        }
+
+                    } else {
+
+                        data.antiSpam
+                            .excludedChannels =
+                            list.filter(
+                                id =>
+                                    id !==
+                                    channel.id
+                            );
+                    }
+
+                    saveData(
+                        database
+                    );
+
+                    return interaction.reply({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setTitle(
+                                    "Nexona Spam Channel"
+                                )
+                                .setDescription(
+                                    status === "off"
+                                        ? `${channel} is now excluded from anti-spam.`
+                                        : `${channel} is now enabled for anti-spam.`
+                                )
+                                .setTimestamp()
+                        ],
+                        ephemeral: true
+                    });
+                }
+
+
+                // =================================================
+                // BYPASS ANTI-SPAM
+                // =================================================
+
+                if (
+                    interaction.commandName ===
+                    "bypass-antispam"
+                ) {
+
+                    const role =
+                        interaction.options
+                            .getRole(
+                                "role"
+                            );
+
+                    data.antiSpam
+                        .bypassRoleId =
+                        role.id;
+
+                    saveData(
+                        database
+                    );
+
+                    return interaction.reply({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setTitle(
+                                    "Nexona Anti-Spam"
+                                )
+                                .setDescription(
+                                    `${role} can now bypass anti-spam.`
+                                )
+                                .setTimestamp()
+                        ],
+                        ephemeral: true
+                    });
+                }
+
+
+                // =================================================
+                // SOFTBAN ADD
+                // =================================================
+
+                if (
+                    interaction.commandName ===
+                    "softban-add"
+                ) {
+
+                    const user =
+                        interaction.options
+                            .getUser(
+                                "user"
+                            );
+
+                    const member =
+                        await interaction.guild
+                            .members
+                            .fetch(
+                                user.id
+                            )
+                            .catch(
+                                () => null
+                            );
+
+                    if (!member) {
+                        return interaction.reply({
+                            content:
+                                "That user is not in this server.",
+                            ephemeral: true
+                        });
+                    }
+
+                    if (
+                        member.id ===
+                        OWNER_ID
+                    ) {
+                        return interaction.reply({
+                            content:
+                                "The Nexona owner cannot be softbanned.",
+                            ephemeral: true
+                        });
+                    }
+
+                    await softbanAdd(
+                        interaction.guild,
+                        member
+                    );
+
+                    return interaction.reply({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setTitle(
+                                    "Nexona Softban"
+                                )
+                                .setDescription(
+                                    `${member} has been softbanned.`
+                                )
+                                .setTimestamp()
+                        ],
+                        ephemeral: true
+                    });
+                }
+
+
+                // =================================================
+                // SOFTBAN REMOVE
+                // =================================================
+
+                if (
+                    interaction.commandName ===
+                    "softban-remove"
+                ) {
+
+                    const user =
+                        interaction.options
+                            .getUser(
+                                "user"
+                            );
+
+                    const member =
+                        await interaction.guild
+                            .members
+                            .fetch(
+                                user.id
+                            )
+                            .catch(
+                                () => null
+                            );
+
+                    if (!member) {
+                        return interaction.reply({
+                            content:
+                                "That user is not in this server.",
+                            ephemeral: true
+                        });
+                    }
+
+                    await softbanRemove(
+                        interaction.guild,
+                        member
+                    );
+
+                    return interaction.reply({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setTitle(
+                                    "Nexona Softban"
+                                )
+                                .setDescription(
+                                    `${member} has been removed from Softban and their saved roles were restored.`
+                                )
+                                .setTimestamp()
+                        ],
+                        ephemeral: true
+                    });
+                }
+
+            } catch (error) {
+
+                console.error(
+                    "NEXONA AUTOMOD ERROR:",
+                    error
+                );
+
+                if (
+                    !interaction.replied &&
+                    !interaction.deferred
+                ) {
+                    await interaction.reply({
+                        content:
+                            "Nexona encountered an error while processing this command.",
+                        ephemeral: true
+                    }).catch(() => {});
+                }
+            }
+        }
+    );
+
+
+    // ========================================================
+    // DISCORD AUTOMOD EXECUTION
+    // ========================================================
+
+    client.on(
+        "autoModerationActionExecution",
+        async execution => {
+
+            try {
+
+                if (
+                    !execution.guild
+                ) {
+                    return;
+                }
+
+                // Owner is handled by the exempt role,
+                // but keep this safety check too.
+                if (
+                    execution.userId ===
+                    OWNER_ID
+                ) {
+                    return;
+                }
+
+                const rule =
+                    execution.autoModerationRule;
+
+                if (
+                    !rule
+                ) {
+                    return;
+                }
+
+                if (
+                    !Object.values(
+                        RULES
+                    ).includes(
+                        rule.name
+                    )
+                ) {
+                    return;
+                }
+
+                // Only react once to the Block Message
+                // action. Timeout is already handled
+                // natively by Discord.
+                if (
+                    execution.action.type !==
+                    AutoModerationActionType.BlockMessage
+                ) {
+                    return;
+                }
+
+                await sendBlockDM(
+                    execution
+                );
+
+                await executeExternalPunishment(
+                    execution
+                );
+
+            } catch (error) {
+
+                console.error(
+                    "NEXONA AUTOMOD EXECUTION ERROR:",
+                    error
+                );
+            }
+        }
+    );
+}
+
+
+// ============================================================
+// EXPORT
 // ============================================================
 
 module.exports = {
     commands,
-    handleCommand,
     handleMessage,
-    getSettings,
-    installInteractionHandlers
+    install,
+    ensureOwnerRole
 };
