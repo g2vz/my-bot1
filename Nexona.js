@@ -19,7 +19,7 @@ const client = new Client({
         GatewayIntentBits.GuildMembers
     ]
 });
-
+softban.install(client);
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 
