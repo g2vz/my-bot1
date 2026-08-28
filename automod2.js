@@ -15,7 +15,7 @@ const commands = [
         .addStringOption(option =>
             option
                 .setName("text")
-                .setDescription("The message Nexona will send.")
+                .setDescription("type smt you want Nexona to say!.")
                 .setRequired(true)
         )
         .setDefaultMemberPermissions(
@@ -31,7 +31,7 @@ async function handleInteraction(interaction) {
     // Extra security check
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages)) {
         return interaction.reply({
-            content: "You need the **Manage Messages** permission to use this command.",
+            content: "**seems like you don't have the perms to use this command😔 you have to get __manage messages__ perms to use this command.",
             ephemeral: true
         });
     }
