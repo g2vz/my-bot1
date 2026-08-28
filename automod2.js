@@ -5,17 +5,16 @@ const {
 
 // ======================================================
 // NEXONA - AUTOMOD 2
-// /talk command
 // ======================================================
 
 const commands = [
     new SlashCommandBuilder()
         .setName("talk")
-        .setDescription("Make Nexona send a message.")
+        .setDescription("make Nexona say smt you want her to say.")
         .addStringOption(option =>
             option
                 .setName("text")
-                .setDescription("type smt you want Nexona to say!.")
+                .setDescription("what do you want her to say?.")
                 .setRequired(true)
         )
         .setDefaultMemberPermissions(
@@ -24,28 +23,59 @@ const commands = [
 ];
 
 async function handleInteraction(interaction) {
-    if (!interaction.isChatInputCommand()) return;
 
-    if (interaction.commandName !== "talk") return;
+    if (!interaction.isChatInputCommand()) {
+        return;
+    }
 
-    // Extra security check
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages)) {
+    if (interaction.commandName !== "talk") {
+        return;
+    }
+
+    // Check permission
+    if (
+        !interaction.memberPermissions ||
+        !interaction.memberPermissions.has(
+            PermissionFlagsBits.ManageMessages
+        )
+    ) {
         return interaction.reply({
-            content: "**seems like you don't have the perms to use this command😔 you have to get __manage messages__ perms to use this command.",
+            content:
+                "You need the **Manage Messages** permission to use this command.",
             ephemeral: true
         });
     }
 
-    const text = interaction.options.getString("text", true);
+    const text = interaction.options.getString(
+        "text",
+        true
+    );
 
-    await interaction.reply({
+    // Send the actual message as Nexona
+    await interaction.channel.send({
         content: text
     });
+
+    // Remove the slash command interaction response
+    // without sending a visible bot message.
+    await interaction.deferReply({
+        ephemeral: true
+    });
+
+    await interaction.deleteReply().catch(() => {});
 }
 
+// ======================================================
+// MESSAGE HANDLER
+// ======================================================
+
 async function handleMessage(message) {
-    // AutoMod 2 message systems will be added here later.
+    // Reserved for the AutoMod 2 system.
 }
+
+// ======================================================
+// EXPORT
+// ======================================================
 
 module.exports = {
     commands,
