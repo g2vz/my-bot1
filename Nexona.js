@@ -9,6 +9,7 @@ require("dotenv").config();
 
 const automod = require("./automod");
 const automod2 = require("./automod2");
+const softban = require ("./slftban");
 
 const client = new Client({
     intents: [
