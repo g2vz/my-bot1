@@ -27,15 +27,23 @@ const CLIENT_ID = process.env.CLIENT_ID;
 // INSTALL SYSTEMS
 // ======================================================
 
-// AutoMod
 if (automod.install) {
     automod.install(client);
 }
 
-// Softban
 if (softban.install) {
     softban.install(client);
 }
+
+// ======================================================
+// SOFTBAN COMMAND NAMES
+// ======================================================
+
+const SOFTBAN_COMMANDS = [
+    "softban",
+    "softban-add",
+    "softban-remove"
+];
 
 // ======================================================
 // READY
@@ -56,7 +64,7 @@ client.once("ready", async () => {
         }).setToken(TOKEN);
 
         // ==================================================
-        // ALL SLASH COMMANDS
+        // REGISTER ALL COMMANDS
         // ==================================================
 
         const allCommands = [
@@ -80,15 +88,16 @@ client.once("ready", async () => {
             `Registered ${commandData.length} slash commands.`
         );
 
-        // Show registered Softban commands
-        const softbanCommandNames =
-            (softban.commands || []).map(
-                command => `/${command.name}`
-            );
+        console.log(
+            "Softban commands registered:"
+        );
 
-        if (softbanCommandNames.length > 0) {
+        for (
+            const command
+            of softban.commands || []
+        ) {
             console.log(
-                `Softban commands: ${softbanCommandNames.join(", ")}`
+                `  /${command.name}`
             );
         }
 
@@ -112,33 +121,62 @@ client.on(
 
         try {
 
-            // ----------------------------------------------
-            // Chat Input Commands
-            // ----------------------------------------------
+            // ==================================================
+            // SOFTBAN COMMANDS
+            // ==================================================
+            //
+            // softban.js has its own interaction handler.
+            // Do NOT process these commands here.
+            //
+            // This prevents AutoMod / AutoMod2 from interfering
+            // with Softban.
+            // ==================================================
 
-            if (interaction.isChatInputCommand()) {
+            if (
+                interaction.isChatInputCommand() &&
+                SOFTBAN_COMMANDS.includes(
+                    interaction.commandName
+                )
+            ) {
+                return;
+            }
+
+
+            // ==================================================
+            // CHAT INPUT COMMANDS
+            // ==================================================
+
+            if (
+                interaction.isChatInputCommand()
+            ) {
 
                 let handled = false;
 
-                // ------------------------------------------
-                // AutoMod
-                // ------------------------------------------
 
-                if (automod.handleCommand) {
+                // ----------------------------------------------
+                // AutoMod
+                // ----------------------------------------------
+
+                if (
+                    automod.handleCommand
+                ) {
 
                     const result =
                         await automod.handleCommand(
                             interaction
                         );
 
-                    if (result === true) {
+                    if (
+                        result === true
+                    ) {
                         handled = true;
                     }
                 }
 
-                // ------------------------------------------
+
+                // ----------------------------------------------
                 // AutoMod 2
-                // ------------------------------------------
+                // ----------------------------------------------
 
                 if (
                     !handled &&
@@ -148,25 +186,15 @@ client.on(
                     await automod2.handleInteraction(
                         interaction
                     );
-
                 }
-
-                // ------------------------------------------
-                // Softban
-                //
-                // Softban already has its own interaction
-                // listener through softban.install(client).
-                //
-                // We do NOT handle it here again because
-                // that would cause duplicate replies.
-                // ------------------------------------------
 
                 return;
             }
 
-            // ----------------------------------------------
-            // Modals / Buttons / Select Menus
-            // ----------------------------------------------
+
+            // ==================================================
+            // MODALS / BUTTONS / SELECT MENUS
+            // ==================================================
 
             if (
                 interaction.isModalSubmit() ||
@@ -177,13 +205,15 @@ client.on(
                 interaction.isUserSelectMenu()
             ) {
 
-                if (automod.handleInteraction) {
+                if (
+                    automod.handleInteraction
+                ) {
 
                     await automod.handleInteraction(
                         interaction
                     );
-
                 }
+
 
                 if (
                     !interaction.replied &&
@@ -194,7 +224,6 @@ client.on(
                     await automod2.handleInteraction(
                         interaction
                     );
-
                 }
 
                 return;
@@ -253,21 +282,24 @@ client.on(
         try {
 
             // Existing AutoMod
-            if (automod.handleMessage) {
+            if (
+                automod.handleMessage
+            ) {
 
                 await automod.handleMessage(
                     message
                 );
-
             }
 
-            // New AutoMod 2
-            if (automod2.handleMessage) {
+
+            // AutoMod 2
+            if (
+                automod2.handleMessage
+            ) {
 
                 await automod2.handleMessage(
                     message
                 );
-
             }
 
         } catch (error) {
