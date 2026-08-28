@@ -10,6 +10,7 @@ require("dotenv").config();
 const automod = require("./automod");
 const automod2 = require("./automod2");
 const softban = require("./softban");
+const chm = require ("./chm");
 
 const client = new Client({
     intents: [
