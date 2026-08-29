@@ -11,6 +11,7 @@ const automod = require("./automod");
 const automod2 = require("./automod2");
 const softban = require("./softban");
 const chm = require ("./chm");
+const warning = require ("./warning");
 
 const client = new Client({
     intents: [
