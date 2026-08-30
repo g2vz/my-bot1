@@ -1,0 +1,10 @@
+"words": {
+    "badword": {
+        "actions": ["delete"],
+        "duration": null
+    },
+    "stupid": {
+        "actions": ["delete"],
+        "duration": null
+    }
+}
