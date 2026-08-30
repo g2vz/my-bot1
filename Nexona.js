@@ -12,7 +12,7 @@ const automod2 = require("./automod2");
 const softban = require("./softban");
 const chm = require ("./chm");
 const warning = require ("./warning");
-const automodfix = require ("./automodfix");
+const automodDelete = require("./automod-delete");
 const logs = require("./logs");
 
 const client = new Client({
