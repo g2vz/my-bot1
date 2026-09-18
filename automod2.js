@@ -57,35 +57,43 @@ async function handleInteraction(interaction) {
 
     const text = interaction.options.getString("text", true);
 
-    try {
-        // Acknowledge the interaction first so Discord does not time it out.
-        await interaction.deferReply();
+    // In guilds, keep the original pattern: send a separate message and then
+    // hide the slash-command acknowledgement.
+    // In DMs / private channels, direct replies are the reliable option.
+    if (interaction.guild) {
+        try {
+            await interaction.deferReply({
+                ephemeral: true
+            });
 
-        if (!interaction.channel) {
-            throw new Error("The interaction has no writable channel.");
+            await interaction.channel.send({
+                content: text
+            });
+
+            await interaction.deleteReply().catch(() => {});
+            return;
+        } catch (error) {
+            console.error("NEXONA TALK ERROR:", error);
+
+            if (interaction.deferred || interaction.replied) {
+                await interaction.editReply({
+                    content: "I could not send that message in this channel."
+                }).catch(() => {});
+            } else {
+                await interaction.reply({
+                    content: "I could not send that message in this channel.",
+                    ephemeral: true
+                }).catch(() => {});
+            }
+
+            return;
         }
-
-        // Send the separate visible message. This is the operation whose
-        // failure should be shown to the user.
-        await interaction.channel.send({
-            content: text
-        });
-    } catch (error) {
-        console.error("NEXONA TALK SEND ERROR:", error);
-
-        await interaction.editReply({
-            content: "I could not send that message in this channel."
-        }).catch(() => {});
-
-        return;
     }
 
-    // Deleting the acknowledgement is only cleanup. In some DM/user-install
-    // contexts Discord can reject this deletion even though the message was
-    // sent successfully, so do not replace a successful message with an
-    // error response if cleanup fails.
-    await interaction.deleteReply().catch(error => {
-        console.error("NEXONA TALK ACKNOWLEDGEMENT CLEANUP ERROR:", error);
+    // For user-installed bot DMs/private channels, replying directly is the
+    // only reliable way to show the sent text.
+    return interaction.reply({
+        content: text
     });
 }
 
