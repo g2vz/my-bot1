@@ -58,36 +58,35 @@ async function handleInteraction(interaction) {
     const text = interaction.options.getString("text", true);
 
     try {
-        // A slash command must be acknowledged quickly. Use a normal,
-        // non-ephemeral acknowledgement because ephemeral replies are not
-        // reliable in DM/private-channel contexts.
+        // Acknowledge the interaction first so Discord does not time it out.
         await interaction.deferReply();
 
-        // Send a separate ordinary message in both guilds and DMs.
         if (!interaction.channel) {
             throw new Error("The interaction has no writable channel.");
         }
 
+        // Send the separate visible message. This is the operation whose
+        // failure should be shown to the user.
         await interaction.channel.send({
             content: text
         });
-
-        // Remove only the command acknowledgement. The separate message
-        // above remains visible.
-        await interaction.deleteReply().catch(() => {});
     } catch (error) {
-        console.error("NEXONA TALK ERROR:", error);
+        console.error("NEXONA TALK SEND ERROR:", error);
 
-        if (interaction.deferred || interaction.replied) {
-            await interaction.editReply({
-                content: "I could not send that message in this channel."
-            }).catch(() => {});
-        } else {
-            await interaction.reply({
-                content: "I could not send that message in this channel."
-            }).catch(() => {});
-        }
+        await interaction.editReply({
+            content: "I could not send that message in this channel."
+        }).catch(() => {});
+
+        return;
     }
+
+    // Deleting the acknowledgement is only cleanup. In some DM/user-install
+    // contexts Discord can reject this deletion even though the message was
+    // sent successfully, so do not replace a successful message with an
+    // error response if cleanup fails.
+    await interaction.deleteReply().catch(error => {
+        console.error("NEXONA TALK ACKNOWLEDGEMENT CLEANUP ERROR:", error);
+    });
 }
 
 // ======================================================
