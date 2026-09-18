@@ -59,18 +59,25 @@ async function handleInteraction(interaction) {
     const text = interaction.options.getString("text", true);
 
     try {
-        // Reply directly with the requested text. This avoids sending a
-        // separate message and then deleting the interaction response,
-        // which can make the visible message disappear in DM contexts.
-        return await interaction.reply({
+        // Send a separate normal message as Nexona.
+        await interaction.channel.send({
             content: text
         });
+
+        // Acknowledge the slash command privately, then remove that
+        // acknowledgment so only the separate Nexona message remains.
+        await interaction.deferReply({
+            ephemeral: true
+        });
+
+        await interaction.deleteReply().catch(() => {});
     } catch (error) {
         console.error("NEXONA TALK ERROR:", error);
 
         if (!interaction.replied && !interaction.deferred) {
             await interaction.reply({
-                content: "I could not send that message in this channel."
+                content: "I could not send that message in this channel.",
+                ephemeral: true
             }).catch(() => {});
         }
     }
