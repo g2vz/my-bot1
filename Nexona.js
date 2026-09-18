@@ -10,9 +10,7 @@ require("dotenv").config();
 const automod = require("./automod");
 const automod2 = require("./automod2");
 const softban = require("./softban");
-const chm = require ("./chm");
-const warning = require ("./warning");
-const automodDelete = require("./automod-delete");
+const warning = require("./warning");
 const logs = require("./logs");
 
 const client = new Client({
@@ -23,7 +21,7 @@ const client = new Client({
         GatewayIntentBits.GuildMembers
     ]
 });
-softban.install(client);
+
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 
@@ -37,6 +35,14 @@ if (automod.install) {
 
 if (softban.install) {
     softban.install(client);
+}
+
+if (warning.install) {
+    warning.install(client);
+}
+
+if (logs.install) {
+    logs.install(client);
 }
 
 // ======================================================
@@ -71,11 +77,25 @@ client.once("ready", async () => {
         // REGISTER ALL COMMANDS
         // ==================================================
 
-        const allCommands = [
+        const commandGroups = [
             ...(automod.commands || []),
             ...(automod2.commands || []),
-            ...(softban.commands || [])
+            ...(softban.commands || []),
+            ...(warning.commands || []),
+            ...(logs.commands || [])
         ];
+
+        const seenCommandNames = new Set();
+        const allCommands = commandGroups.filter(command => {
+            const commandName = command.name;
+
+            if (seenCommandNames.has(commandName)) {
+                return false;
+            }
+
+            seenCommandNames.add(commandName);
+            return true;
+        });
 
         const commandData = allCommands.map(
             command => command.toJSON()
