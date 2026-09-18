@@ -21,7 +21,6 @@ const commands = [
                 .setDescription("what do you want her to say?.")
                 .setRequired(true)
         )
-        // Required for user-installed apps and DM visibility.
         .setIntegrationTypes(
             ApplicationIntegrationType.GuildInstall,
             ApplicationIntegrationType.UserInstall
@@ -48,8 +47,7 @@ async function handleInteraction(interaction) {
         PermissionFlagsBits.ManageMessages
     );
 
-    // The owner can always use /talk. Others still need Manage Messages,
-    // but only when they are in a guild context.
+    // The owner can use /talk anywhere. Other users need Manage Messages.
     if (!isOwner && !canManageMessages) {
         return interaction.reply({
             content:
@@ -58,31 +56,23 @@ async function handleInteraction(interaction) {
         });
     }
 
-    const text = interaction.options.getString(
-        "text",
-        true
-    );
-
-    // In DM/private-channel contexts, Discord may not allow ephemeral replies.
-    // Defer first, then send the message to the current channel.
-    await interaction.deferReply({
-        ephemeral: false
-    }).catch(() => {});
+    const text = interaction.options.getString("text", true);
 
     try {
-        if (interaction.channel) {
-            await interaction.channel.send({
-                content: text
-            });
-        }
-
-        await interaction.deleteReply().catch(() => {});
+        // Reply directly with the requested text. This avoids sending a
+        // separate message and then deleting the interaction response,
+        // which can make the visible message disappear in DM contexts.
+        return await interaction.reply({
+            content: text
+        });
     } catch (error) {
         console.error("NEXONA TALK ERROR:", error);
 
-        await interaction.editReply({
-            content: "I could not send that message in this channel."
-        }).catch(() => {});
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({
+                content: "I could not send that message in this channel."
+            }).catch(() => {});
+        }
     }
 }
 
