@@ -34,11 +34,10 @@ const commands = [
 
 async function handleInteraction(interaction) {
 
-    if (!interaction.isChatInputCommand()) {
-        return;
-    }
-
-    if (interaction.commandName !== "talk") {
+    if (
+        !interaction.isChatInputCommand() ||
+        interaction.commandName !== "talk"
+    ) {
         return;
     }
 
@@ -59,25 +58,33 @@ async function handleInteraction(interaction) {
     const text = interaction.options.getString("text", true);
 
     try {
-        // Send a separate normal message as Nexona.
+        // A slash command must be acknowledged quickly. Use a normal,
+        // non-ephemeral acknowledgement because ephemeral replies are not
+        // reliable in DM/private-channel contexts.
+        await interaction.deferReply();
+
+        // Send a separate ordinary message in both guilds and DMs.
+        if (!interaction.channel) {
+            throw new Error("The interaction has no writable channel.");
+        }
+
         await interaction.channel.send({
             content: text
         });
 
-        // Acknowledge the slash command privately, then remove that
-        // acknowledgment so only the separate Nexona message remains.
-        await interaction.deferReply({
-            ephemeral: true
-        });
-
+        // Remove only the command acknowledgement. The separate message
+        // above remains visible.
         await interaction.deleteReply().catch(() => {});
     } catch (error) {
         console.error("NEXONA TALK ERROR:", error);
 
-        if (!interaction.replied && !interaction.deferred) {
+        if (interaction.deferred || interaction.replied) {
+            await interaction.editReply({
+                content: "I could not send that message in this channel."
+            }).catch(() => {});
+        } else {
             await interaction.reply({
-                content: "I could not send that message in this channel.",
-                ephemeral: true
+                content: "I could not send that message in this channel."
             }).catch(() => {});
         }
     }
