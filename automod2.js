@@ -1,7 +1,8 @@
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
-    InteractionContextType
+    InteractionContextType,
+    ApplicationIntegrationType
 } = require("discord.js");
 
 // ======================================================
@@ -20,10 +21,15 @@ const commands = [
                 .setDescription("what do you want her to say?.")
                 .setRequired(true)
         )
-        // Explicitly allow this command in servers and bot DMs.
+        // Required for user-installed apps and DM visibility.
+        .setIntegrationTypes(
+            ApplicationIntegrationType.GuildInstall,
+            ApplicationIntegrationType.UserInstall
+        )
         .setContexts(
             InteractionContextType.Guild,
-            InteractionContextType.BotDM
+            InteractionContextType.BotDM,
+            InteractionContextType.PrivateChannel
         )
 ];
 
@@ -42,8 +48,8 @@ async function handleInteraction(interaction) {
         PermissionFlagsBits.ManageMessages
     );
 
-    // The owner can use /talk anywhere, including DMs. Other users still
-    // need Manage Messages in a server.
+    // The owner can always use /talk. Others still need Manage Messages,
+    // but only when they are in a guild context.
     if (!isOwner && !canManageMessages) {
         return interaction.reply({
             content:
@@ -57,19 +63,20 @@ async function handleInteraction(interaction) {
         true
     );
 
-    // Acknowledge first so Discord does not time out the interaction while
-    // the bot sends the message. Ephemeral replies are avoided because the
-    // DM interaction context does not support them consistently.
-    await interaction.deferReply();
+    // In DM/private-channel contexts, Discord may not allow ephemeral replies.
+    // Defer first, then send the message to the current channel.
+    await interaction.deferReply({
+        ephemeral: false
+    }).catch(() => {});
 
     try {
-        await interaction.channel.send({
-            content: text
-        });
+        if (interaction.channel) {
+            await interaction.channel.send({
+                content: text
+            });
+        }
 
-        // Remove the acknowledgement so only the message sent by Nexona
-        // remains visible.
-        await interaction.deleteReply();
+        await interaction.deleteReply().catch(() => {});
     } catch (error) {
         console.error("NEXONA TALK ERROR:", error);
 
