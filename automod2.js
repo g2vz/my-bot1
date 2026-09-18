@@ -1,6 +1,7 @@
 const {
     SlashCommandBuilder,
-    PermissionFlagsBits
+    PermissionFlagsBits,
+    InteractionContextType
 } = require("discord.js");
 
 // ======================================================
@@ -19,9 +20,11 @@ const commands = [
                 .setDescription("what do you want her to say?.")
                 .setRequired(true)
         )
-        // Do not set a default member permission here. Discord can block
-        // the owner before the interaction reaches the handler otherwise.
-        .setDMPermission(true)
+        // Explicitly allow this command in servers and bot DMs.
+        .setContexts(
+            InteractionContextType.Guild,
+            InteractionContextType.BotDM
+        )
 ];
 
 async function handleInteraction(interaction) {
@@ -40,7 +43,7 @@ async function handleInteraction(interaction) {
     );
 
     // The owner can use /talk anywhere, including DMs. Other users still
-    // need Manage Messages, as before.
+    // need Manage Messages in a server.
     if (!isOwner && !canManageMessages) {
         return interaction.reply({
             content:
@@ -54,19 +57,26 @@ async function handleInteraction(interaction) {
         true
     );
 
-    // Send the actual message as Nexona in the current channel, whether it
-    // is a server channel or a DM channel.
-    await interaction.channel.send({
-        content: text
-    });
+    // Acknowledge first so Discord does not time out the interaction while
+    // the bot sends the message. Ephemeral replies are avoided because the
+    // DM interaction context does not support them consistently.
+    await interaction.deferReply();
 
-    // Remove the slash command interaction response without sending a
-    // visible bot message.
-    await interaction.deferReply({
-        ephemeral: true
-    });
+    try {
+        await interaction.channel.send({
+            content: text
+        });
 
-    await interaction.deleteReply().catch(() => {});
+        // Remove the acknowledgement so only the message sent by Nexona
+        // remains visible.
+        await interaction.deleteReply();
+    } catch (error) {
+        console.error("NEXONA TALK ERROR:", error);
+
+        await interaction.editReply({
+            content: "I could not send that message in this channel."
+        }).catch(() => {});
+    }
 }
 
 // ======================================================
