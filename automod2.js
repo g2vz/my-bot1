@@ -7,6 +7,8 @@ const {
 // NEXONA - AUTOMOD 2
 // ======================================================
 
+const OWNER_ID = "1193602200644091957";
+
 const commands = [
     new SlashCommandBuilder()
         .setName("talk")
@@ -17,9 +19,9 @@ const commands = [
                 .setDescription("what do you want her to say?.")
                 .setRequired(true)
         )
-        .setDefaultMemberPermissions(
-            PermissionFlagsBits.ManageMessages.toString()
-        )
+        // Do not set a default member permission here. Discord can block
+        // the owner before the interaction reaches the handler otherwise.
+        .setDMPermission(true)
 ];
 
 async function handleInteraction(interaction) {
@@ -32,13 +34,14 @@ async function handleInteraction(interaction) {
         return;
     }
 
-    // Check permission
-    if (
-        !interaction.memberPermissions ||
-        !interaction.memberPermissions.has(
-            PermissionFlagsBits.ManageMessages
-        )
-    ) {
+    const isOwner = interaction.user.id === OWNER_ID;
+    const canManageMessages = interaction.memberPermissions?.has(
+        PermissionFlagsBits.ManageMessages
+    );
+
+    // The owner can use /talk anywhere, including DMs. Other users still
+    // need Manage Messages, as before.
+    if (!isOwner && !canManageMessages) {
         return interaction.reply({
             content:
                 "You need the **Manage Messages** permission to use this command.",
@@ -51,13 +54,14 @@ async function handleInteraction(interaction) {
         true
     );
 
-    // Send the actual message as Nexona
+    // Send the actual message as Nexona in the current channel, whether it
+    // is a server channel or a DM channel.
     await interaction.channel.send({
         content: text
     });
 
-    // Remove the slash command interaction response
-    // without sending a visible bot message.
+    // Remove the slash command interaction response without sending a
+    // visible bot message.
     await interaction.deferReply({
         ephemeral: true
     });
