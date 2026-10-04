@@ -41,6 +41,7 @@ client.once("ready", async () => {
         );
 
         console.log(`Registered ${allCommands.length} slash command(s).`);
+        allCommands.forEach(cmd => console.log(`  /${cmd.name}`));
     } catch (error) {
         console.error("Failed to register slash commands:", error);
     }
