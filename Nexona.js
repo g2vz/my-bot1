@@ -8,19 +8,22 @@ const {
 require("dotenv").config();
 
 const talk = require("./talk");
-const afk = require ("./afk");
+const afk = require("./afk");
 
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildVoiceStates
     ]
 });
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
+
+const allCommands = [...talk.commands, ...afk.commands];
 
 client.once("ready", async () => {
     console.log("--------------------------------");
@@ -32,14 +35,12 @@ client.once("ready", async () => {
     try {
         const rest = new REST({ version: "10" }).setToken(TOKEN);
 
-        const commandData = talk.commands.map(command => command.toJSON());
-
         await rest.put(
             Routes.applicationCommands(CLIENT_ID),
-            { body: commandData }
+            { body: allCommands.map(command => command.toJSON()) }
         );
 
-        console.log(`Registered ${commandData.length} slash command(s).`);
+        console.log(`Registered ${allCommands.length} slash command(s).`);
     } catch (error) {
         console.error("Failed to register slash commands:", error);
     }
@@ -48,6 +49,10 @@ client.once("ready", async () => {
 client.on("interactionCreate", async interaction => {
     if (talk.handleInteraction) {
         await talk.handleInteraction(interaction);
+    }
+
+    if (afk.handleInteraction) {
+        await afk.handleInteraction(interaction);
     }
 });
 
