@@ -61,7 +61,7 @@ async function handleInteraction(interaction) {
         await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
 
         return interaction.reply({
-            content: `مامبو نائم الآن في <#${voiceChannel.id}>.`,
+            content: `مامبو نايمه الآن في <#${voiceChannel.id}>.`,
             ephemeral: true
         });
     } catch (error) {
