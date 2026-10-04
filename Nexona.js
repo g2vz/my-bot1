@@ -8,6 +8,7 @@ const {
 require("dotenv").config();
 
 const talk = require("./talk");
+const afk = require ("./afk");
 
 const client = new Client({
     intents: [
