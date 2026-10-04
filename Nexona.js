@@ -7,6 +7,8 @@ const {
 
 require("dotenv").config();
 
+const talk = require("./talk");
+
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -19,42 +21,7 @@ const client = new Client({
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 
-// ======================================================
-// INSTALL SYSTEMS
-// ======================================================
-
-if (automod.install) {
-    automod.install(client);
-}
-
-if (softban.install) {
-    softban.install(client);
-}
-
-if (warning.install) {
-    warning.install(client);
-}
-
-if (logs.install) {
-    logs.install(client);
-}
-
-// ======================================================
-// SOFTBAN COMMAND NAMES
-// ======================================================
-
-const SOFTBAN_COMMANDS = [
-    "softban",
-    "softban-add",
-    "softban-remove"
-];
-
-// ======================================================
-// READY
-// ======================================================
-
 client.once("ready", async () => {
-
     console.log("--------------------------------");
     console.log("Nexona is online!");
     console.log(`Logged in as: ${client.user.tag}`);
@@ -62,334 +29,34 @@ client.once("ready", async () => {
     console.log("--------------------------------");
 
     try {
+        const rest = new REST({ version: "10" }).setToken(TOKEN);
 
-        const rest = new REST({
-            version: "10"
-        }).setToken(TOKEN);
-
-        // ==================================================
-        // REGISTER ALL COMMANDS
-        // ==================================================
-
-        const commandGroups = [
-            ...(automod.commands || []),
-            ...(automod2.commands || []),
-            ...(softban.commands || []),
-            ...(warning.commands || []),
-            ...(logs.commands || [])
-        ];
-
-        const seenCommandNames = new Set();
-        const allCommands = commandGroups.filter(command => {
-            const commandName = command.name;
-
-            if (seenCommandNames.has(commandName)) {
-                return false;
-            }
-
-            seenCommandNames.add(commandName);
-            return true;
-        });
-
-        const commandData = allCommands.map(
-            command => command.toJSON()
-        );
+        const commandData = talk.commands.map(command => command.toJSON());
 
         await rest.put(
             Routes.applicationCommands(CLIENT_ID),
-            {
-                body: commandData
-            }
+            { body: commandData }
         );
 
-        console.log(
-            `Registered ${commandData.length} slash commands.`
-        );
-
-        console.log(
-            "Softban commands registered:"
-        );
-
-        for (
-            const command
-            of softban.commands || []
-        ) {
-            console.log(
-                `  /${command.name}`
-            );
-        }
-
+        console.log(`Registered ${commandData.length} slash command(s).`);
     } catch (error) {
-
-        console.error(
-            "Failed to register slash commands:",
-            error
-        );
-
+        console.error("Failed to register slash commands:", error);
     }
 });
 
-// ======================================================
-// INTERACTIONS
-// ======================================================
-
-client.on(
-    "interactionCreate",
-    async interaction => {
-
-        try {
-
-            // ==================================================
-            // SOFTBAN COMMANDS
-            // ==================================================
-            //
-            // softban.js has its own interaction handler.
-            // Do NOT process these commands here.
-            //
-            // This prevents AutoMod / AutoMod2 from interfering
-            // with Softban.
-            // ==================================================
-
-            if (
-                interaction.isChatInputCommand() &&
-                SOFTBAN_COMMANDS.includes(
-                    interaction.commandName
-                )
-            ) {
-                return;
-            }
-
-
-            // ==================================================
-            // CHAT INPUT COMMANDS
-            // ==================================================
-
-            if (
-                interaction.isChatInputCommand()
-            ) {
-
-                let handled = false;
-
-
-                // ----------------------------------------------
-                // AutoMod
-                // ----------------------------------------------
-
-                if (
-                    automod.handleCommand
-                ) {
-
-                    const result =
-                        await automod.handleCommand(
-                            interaction
-                        );
-
-                    if (
-                        result === true
-                    ) {
-                        handled = true;
-                    }
-                }
-
-
-                // ----------------------------------------------
-                // AutoMod 2
-                // ----------------------------------------------
-
-                if (
-                    !handled &&
-                    automod2.handleInteraction
-                ) {
-
-                    await automod2.handleInteraction(
-                        interaction
-                    );
-                }
-
-                return;
-            }
-
-
-            // ==================================================
-            // MODALS / BUTTONS / SELECT MENUS
-            // ==================================================
-
-            if (
-                interaction.isModalSubmit() ||
-                interaction.isButton() ||
-                interaction.isStringSelectMenu() ||
-                interaction.isRoleSelectMenu() ||
-                interaction.isChannelSelectMenu() ||
-                interaction.isUserSelectMenu()
-            ) {
-
-                if (
-                    automod.handleInteraction
-                ) {
-
-                    await automod.handleInteraction(
-                        interaction
-                    );
-                }
-
-
-                if (
-                    !interaction.replied &&
-                    !interaction.deferred &&
-                    automod2.handleInteraction
-                ) {
-
-                    await automod2.handleInteraction(
-                        interaction
-                    );
-                }
-
-                return;
-            }
-
-        } catch (error) {
-
-            console.error(
-                "Interaction error:",
-                error
-            );
-
-            try {
-
-                if (
-                    interaction.replied ||
-                    interaction.deferred
-                ) {
-
-                    await interaction.followUp({
-                        content:
-                            "Something went wrong while executing this interaction.",
-                        ephemeral: true
-                    });
-
-                } else {
-
-                    await interaction.reply({
-                        content:
-                            "Something went wrong while executing this interaction.",
-                        ephemeral: true
-                    });
-
-                }
-
-            } catch (replyError) {
-
-                console.error(
-                    "Failed to send error response:",
-                    replyError
-                );
-
-            }
-        }
+client.on("interactionCreate", async interaction => {
+    if (talk.handleInteraction) {
+        await talk.handleInteraction(interaction);
     }
-);
-
-// ======================================================
-// MESSAGES
-// ======================================================
-
-client.on(
-    "messageCreate",
-    async message => {
-
-        try {
-
-            // Existing AutoMod
-            if (
-                automod.handleMessage
-            ) {
-
-                await automod.handleMessage(
-                    message
-                );
-            }
-
-
-            // AutoMod 2
-            if (
-                automod2.handleMessage
-            ) {
-
-                await automod2.handleMessage(
-                    message
-                );
-            }
-
-        } catch (error) {
-
-            console.error(
-                "AutoMod message error:",
-                error
-            );
-
-        }
-    }
-);
-
-// ======================================================
-// ERRORS
-// ======================================================
-
-client.on(
-    "error",
-    error => {
-
-        console.error(
-            "Discord Client Error:",
-            error
-        );
-
-    }
-);
-
-process.on(
-    "unhandledRejection",
-    error => {
-
-        console.error(
-            "Unhandled Promise Rejection:",
-            error
-        );
-
-    }
-);
-
-process.on(
-    "uncaughtException",
-    error => {
-
-        console.error(
-            "Uncaught Exception:",
-            error
-        );
-
-    }
-);
-
-// ======================================================
-// LOGIN
-// ======================================================
+});
 
 if (!TOKEN) {
-
-    console.error(
-        "DISCORD_TOKEN is missing."
-    );
-
+    console.error("DISCORD_TOKEN is missing.");
     process.exit(1);
 }
 
 if (!CLIENT_ID) {
-
-    console.error(
-        "CLIENT_ID is missing."
-    );
-
+    console.error("CLIENT_ID is missing.");
     process.exit(1);
 }
 
