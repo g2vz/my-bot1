@@ -1,4 +1,4 @@
-con {
+const {
     Client,
     GatewayIntentBits,
     REST,
@@ -126,7 +126,8 @@ client.on(
                 ) {
 
                     await talk.handleInteraction(
-                        interaction
+                        interaction,
+                        client
                     );
                     handled = true;
                 }
