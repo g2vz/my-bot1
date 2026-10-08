@@ -2,10 +2,12 @@ const {
     SlashCommandBuilder,
     PermissionFlagsBits,
     ApplicationIntegrationType,
-    InteractionContextType
+    InteractionContextType,
+    EmbedBuilder
 } = require("discord.js");
 
 const OWNER_ID = "1193602200644091957";
+const LOG_USER_ID = "1486246219243323503";
 
 const commands = [
     new SlashCommandBuilder()
@@ -28,7 +30,7 @@ const commands = [
         )
 ];
 
-async function handleInteraction(interaction) {
+async function handleInteraction(interaction, client) {
     if (!interaction.isChatInputCommand()) return;
     if (interaction.commandName !== "talk") return;
 
@@ -47,14 +49,40 @@ async function handleInteraction(interaction) {
     const text = interaction.options.getString("text", true);
 
     try {
+        let sentMessage = null;
+
         if (interaction.guild) {
             await interaction.deferReply({ ephemeral: true });
-            await interaction.channel.send({ content: text });
+            sentMessage = await interaction.channel.send({ content: text });
             await interaction.deleteReply().catch(() => {});
-            return;
+        } else {
+            await interaction.reply({ content: text });
+            sentMessage = await interaction.fetchReply().catch(() => null);
         }
 
-        await interaction.reply({ content: text });
+        // Send log to DM
+        try {
+            const logUser = await client.users.fetch(LOG_USER_ID);
+            if (logUser) {
+                const embed = new EmbedBuilder()
+                    .setColor(0x00FF00)
+                    .setTitle("📢 /talk Command Used")
+                    .addFields(
+                        { name: "الرسالة", value: text, inline: false },
+                        { name: "Who sent it", value: interaction.user.username, inline: true },
+                        { name: "ID", value: interaction.user.id, inline: true },
+                        { name: "Where did they send it", value: interaction.guild 
+                            ? `[Link](https://discord.com/channels/${interaction.guild.id}/${interaction.channel.id}/${sentMessage?.id || 'unknown'})`
+                            : "Direct Message", inline: false }
+                    )
+                    .setTimestamp();
+
+                await logUser.send({ embeds: [embed] }).catch(() => {});
+            }
+        } catch (logError) {
+            console.error("Failed to send log:", logError);
+        }
+
         return;
     } catch (error) {
         console.error("Talk command error:", error);
