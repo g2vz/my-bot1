@@ -7,8 +7,16 @@ const {
 
 require("dotenv").config();
 
+// ======================================================
+// COMMAND MODULES
+// ======================================================
+
 const talk = require("./talk");
 const mamboSleep = require("./mambo-sleep");
+
+// ======================================================
+// CLIENT
+// ======================================================
 
 const client = new Client({
     intents: [
@@ -20,6 +28,10 @@ const client = new Client({
     ]
 });
 
+// ======================================================
+// ENVIRONMENT VARIABLES
+// ======================================================
+
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 
@@ -29,18 +41,26 @@ const CLIENT_ID = process.env.CLIENT_ID;
 
 const commandGroups = [
     ...(talk.commands || []),
-    ...(afk.commands || [])
+    ...(mamboSleep.commands || [])
 ];
 
+// Prevent duplicate slash command names
 const seenCommandNames = new Set();
-const allCommands = commandGroups.filter(command => {
-    const commandName = command.name;
 
-    if (seenCommandNames.has(commandName)) {
+const allCommands = commandGroups.filter(command => {
+    if (!command || !command.name) {
         return false;
     }
 
-    seenCommandNames.add(commandName);
+    if (seenCommandNames.has(command.name)) {
+        console.warn(
+            `Duplicate command ignored: /${command.name}`
+        );
+
+        return false;
+    }
+
+    seenCommandNames.add(command.name);
     return true;
 });
 
@@ -49,7 +69,6 @@ const allCommands = commandGroups.filter(command => {
 // ======================================================
 
 client.once("ready", async () => {
-
     console.log("--------------------------------");
     console.log("Nexona is online!");
     console.log(`Logged in as: ${client.user.tag}`);
@@ -57,14 +76,9 @@ client.once("ready", async () => {
     console.log("--------------------------------");
 
     try {
-
         const rest = new REST({
             version: "10"
         }).setToken(TOKEN);
-
-        // ==================================================
-        // REGISTER ALL COMMANDS
-        // ==================================================
 
         const commandData = allCommands.map(
             command => command.toJSON()
@@ -81,22 +95,15 @@ client.once("ready", async () => {
             `Registered ${commandData.length} slash commands.`
         );
 
-        for (
-            const command
-            of allCommands
-        ) {
-            console.log(
-                `  /${command.name}`
-            );
+        for (const command of allCommands) {
+            console.log(`  /${command.name}`);
         }
 
     } catch (error) {
-
         console.error(
             "Failed to register slash commands:",
             error
         );
-
     }
 });
 
@@ -104,137 +111,101 @@ client.once("ready", async () => {
 // INTERACTIONS
 // ======================================================
 
-client.on(
-    "interactionCreate",
-    async interaction => {
+client.on("interactionCreate", async interaction => {
+    try {
+        // --------------------------------------------------
+        // MAMBO SLEEP
+        // Handles slash commands, channel selection and buttons
+        // --------------------------------------------------
 
-        try {
+        if (mamboSleep.handleInteraction) {
+            const handled =
+                await mamboSleep.handleInteraction(interaction);
 
-            // ==================================================
-            // CHAT INPUT COMMANDS
-            // ==================================================
-
-            if (
-                interaction.isChatInputCommand()
-            ) {
-
-                let handled = false;
-
-                // Talk Command
-                if (
-                    talk.handleInteraction
-                ) {
-
-                    await talk.handleInteraction(
-                        interaction,
-                        client
-                    );
-                    handled = true;
-                }
-
-                // AFK Command
-                if (
-                    !handled &&
-                    afk.handleInteraction
-                ) {
-
-                    await afk.handleInteraction(
-                        interaction
-                    );
-                    handled = true;
-                }
-
+            if (handled) {
                 return;
             }
+        }
 
-        } catch (error) {
+        // --------------------------------------------------
+        // TALK COMMANDS
+        // --------------------------------------------------
 
-            console.error(
-                "Interaction error:",
-                error
-            );
-
-            try {
-
-                if (
-                    interaction.replied ||
-                    interaction.deferred
-                ) {
-
-                    await interaction.followUp({
-                        content:
-                            "Something went wrong while executing this interaction.",
-                        ephemeral: true
-                    });
-
-                } else {
-
-                    await interaction.reply({
-                        content:
-                            "Something went wrong while executing this interaction.",
-                        ephemeral: true
-                    });
-
-                }
-
-            } catch (replyError) {
-
-                console.error(
-                    "Failed to send error response:",
-                    replyError
+        if (interaction.isChatInputCommand()) {
+            if (talk.handleInteraction) {
+                await talk.handleInteraction(
+                    interaction,
+                    client
                 );
-
             }
+
+            return;
+        }
+
+    } catch (error) {
+        console.error(
+            "Interaction error:",
+            error
+        );
+
+        const errorMessage =
+            "Something went wrong while executing this interaction.";
+
+        try {
+            if (interaction.replied || interaction.deferred) {
+                await interaction.followUp({
+                    content: errorMessage,
+                    ephemeral: true
+                });
+            } else {
+                await interaction.reply({
+                    content: errorMessage,
+                    ephemeral: true
+                });
+            }
+        } catch (replyError) {
+            console.error(
+                "Failed to send error response:",
+                replyError
+            );
         }
     }
-);
+});
 
 // ======================================================
-// ERRORS
+// DISCORD CLIENT ERRORS
 // ======================================================
 
-client.on(
-    "error",
-    error => {
-
-        console.error(
-            "Discord Client Error:",
-            error
-        );
-
-    }
-);
-
-process.on(
-    "unhandledRejection",
-    error => {
-
-        console.error(
-            "Unhandled Promise Rejection:",
-            error
-        );
-
-    }
-);
-
-process.on(
-    "uncaughtException",
-    error => {
-
-        console.error(
-            "Uncaught Exception:",
-            error
-        );
-
-    }
-);
+client.on("error", error => {
+    console.error(
+        "Discord Client Error:",
+        error
+    );
+});
 
 // ======================================================
-// LOGIN
+// PROCESS ERRORS
+// ======================================================
+
+process.on("unhandledRejection", error => {
+    console.error(
+        "Unhandled Promise Rejection:",
+        error
+    );
+});
+
+process.on("uncaughtException", error => {
+    console.error(
+        "Uncaught Exception:",
+        error
+    );
+});
+
+// ======================================================
+// LOGIN VALIDATION
 // ======================================================
 
 if (!TOKEN) {
-
     console.error(
         "DISCORD_TOKEN is missing."
     );
@@ -243,12 +214,15 @@ if (!TOKEN) {
 }
 
 if (!CLIENT_ID) {
-
     console.error(
         "CLIENT_ID is missing."
     );
 
     process.exit(1);
 }
+
+// ======================================================
+// LOGIN
+// ======================================================
 
 client.login(TOKEN);
