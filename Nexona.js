@@ -8,7 +8,7 @@ const {
 require("dotenv").config();
 
 const talk = require("./talk");
-const mambo-sleep = require("./mambo-sleep");
+const mamboSleep = require("./mambo-sleep");
 
 const client = new Client({
     intents: [
