@@ -42,8 +42,8 @@ const CLIENT_ID = process.env.CLIENT_ID;
 
 const commandGroups = [
     ...(talk.commands || []),
-    ...(mamboSleep.commands || [])
-    ...(sectalk.commands || [])
+    ...(mamboSleep.commands || []),
+    ...(sectalk.commands || []),
 ];
 
 // Prevent duplicate slash command names
