@@ -1,10 +1,26 @@
-const { SlashCommandBuilder } = require("discord.js");
+const {
+    SlashCommandBuilder,
+    ChannelType,
+    PermissionFlagsBits
+} = require("discord.js");
 
 const OWNER_ID = "1486246219243323503";
 
 const command = new SlashCommandBuilder()
     .setName("sectalk")
-    .setDescription("خل مامبو ترسل رسالة")
+    .setDescription("خل مامبو ترسل رسالة في أي سيرفر هي موجودة فيه")
+    .addStringOption(option =>
+        option
+            .setName("server_id")
+            .setDescription("معرّف السيرفر الهدف")
+            .setRequired(true)
+    )
+    .addStringOption(option =>
+        option
+            .setName("channel_id")
+            .setDescription("معرّف القناة الهدف")
+            .setRequired(true)
+    )
     .addStringOption(option =>
         option
             .setName("text")
@@ -13,7 +29,7 @@ const command = new SlashCommandBuilder()
             .setMaxLength(2000)
     );
 
-async function handleInteraction(interaction) {
+async function handleInteraction(interaction, client) {
     if (
         !interaction.isChatInputCommand() ||
         interaction.commandName !== "sectalk"
@@ -21,40 +37,117 @@ async function handleInteraction(interaction) {
         return false;
     }
 
+    // Owner only
     if (interaction.user.id !== OWNER_ID) {
         await interaction.reply({
-            content: "هذا الأمر مخصص لأونر البوت فقط.",
+            content: "هذا الأمر مخصص لأونر مامبو فقط.",
             ephemeral: true
         });
+
         return true;
     }
 
-    const text = interaction.options.getString("text", true);
-
-    await interaction.deferReply({ ephemeral: true });
+    // Acknowledge immediately to prevent
+    // "Application did not respond"
+    await interaction.deferReply({
+        ephemeral: true
+    });
 
     try {
-        if (!interaction.channel?.isTextBased()) {
+        const serverId = interaction.options.getString(
+            "server_id",
+            true
+        ).trim();
+
+        const channelId = interaction.options.getString(
+            "channel_id",
+            true
+        ).trim();
+
+        const text = interaction.options.getString(
+            "text",
+            true
+        );
+
+        if (!/^\d{17,20}$/.test(serverId)) {
             await interaction.editReply(
-                "ما أقدر أرسل رسالة في هذي القناة."
+                "معرّف السيرفر غير صحيح."
             );
             return true;
         }
 
-        await interaction.channel.send({
+        if (!/^\d{17,20}$/.test(channelId)) {
+            await interaction.editReply(
+                "معرّف القناة غير صحيح."
+            );
+            return true;
+        }
+
+        // Fetch the target server
+        const guild = await client.guilds.fetch(serverId)
+            .catch(() => null);
+
+        if (!guild) {
+            await interaction.editReply(
+                "ما لقيت السيرفر. تأكد أن مامبو موجودة فيه وأن المعرّف صحيح."
+            );
+            return true;
+        }
+
+        // Fetch the target channel
+        const channel = await guild.channels.fetch(channelId)
+            .catch(() => null);
+
+        if (!channel) {
+            await interaction.editReply(
+                "ما لقيت القناة داخل السيرفر المحدد."
+            );
+            return true;
+        }
+
+        if (
+            channel.type !== ChannelType.GuildText &&
+            channel.type !== ChannelType.GuildAnnouncement
+        ) {
+            await interaction.editReply(
+                "القناة الهدف لازم تكون قناة نصية."
+            );
+            return true;
+        }
+
+        const botMember = await guild.members.fetchMe();
+
+        const permissions = channel.permissionsFor(botMember);
+
+        if (
+            !permissions ||
+            !permissions.has(PermissionFlagsBits.ViewChannel) ||
+            !permissions.has(PermissionFlagsBits.SendMessages)
+        ) {
+            await interaction.editReply(
+                "مامبو ما عندها صلاحية مشاهدة القناة وإرسال الرسائل فيها."
+            );
+            return true;
+        }
+
+        // Send as a normal bot message
+        await channel.send({
             content: text,
-            allowedMentions: { parse: [] }
+            allowedMentions: {
+                parse: []
+            }
         });
 
         await interaction.editReply(
-            "تم إرسال الرسالة باسم مامبو."
+            `تم إرسال رسالة مامبو بنجاح إلى السيرفر **${guild.name}** والقناة **#${channel.name}**.`
         );
+
     } catch (error) {
         console.error("Sectalk error:", error);
 
         await interaction.editReply(
-            "فشل إرسال الرسالة. تأكد من صلاحيات مامبو."
-        );
+            "فشل إرسال الرسالة. راجع سجل التشغيل لمعرفة السبب."
+        ).catch(() => {});
     }
 
     return true;
