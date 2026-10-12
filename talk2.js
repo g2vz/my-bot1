@@ -3,7 +3,7 @@ const { SlashCommandBuilder } = require("discord.js");
 const OWNER_ID = "1486246219243323503";
 
 const command = new SlashCommandBuilder()
-    .setName("talk")
+    .setName("sectalk)"
     .setDescription("خل مامبو ترسل رسالة")
     .addStringOption(option =>
         option
@@ -16,7 +16,7 @@ const command = new SlashCommandBuilder()
 async function handleInteraction(interaction) {
     if (
         !interaction.isChatInputCommand() ||
-        interaction.commandName !== "talk"
+        interaction.commandName !== "sectalk"
     ) {
         return false;
     }
@@ -50,7 +50,7 @@ async function handleInteraction(interaction) {
             "تم إرسال الرسالة باسم مامبو."
         );
     } catch (error) {
-        console.error("Mambo talk error:", error);
+        console.error("Mambo sectalk error:", error);
 
         await interaction.editReply(
             "فشل إرسال الرسالة. تأكد من صلاحيات مامبو."
