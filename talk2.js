@@ -3,7 +3,7 @@ const { SlashCommandBuilder } = require("discord.js");
 const OWNER_ID = "1486246219243323503";
 
 const command = new SlashCommandBuilder()
-    .setName("sectalk)"
+    .setName("sectalk")
     .setDescription("خل مامبو ترسل رسالة")
     .addStringOption(option =>
         option
@@ -50,7 +50,7 @@ async function handleInteraction(interaction) {
             "تم إرسال الرسالة باسم مامبو."
         );
     } catch (error) {
-        console.error("Mambo sectalk error:", error);
+        console.error("Sectalk error:", error);
 
         await interaction.editReply(
             "فشل إرسال الرسالة. تأكد من صلاحيات مامبو."
