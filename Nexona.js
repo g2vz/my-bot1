@@ -13,6 +13,7 @@ require("dotenv").config();
 
 const talk = require("./talk");
 const mamboSleep = require("./mambo-sleep");
+const automod = require("./automod");
 
 // ======================================================
 // CLIENT
@@ -27,6 +28,7 @@ const client = new Client({
         GatewayIntentBits.GuildVoiceStates
     ]
 });
+client.on("messageCreate", automod.handleMessage);
 
 // ======================================================
 // ENVIRONMENT VARIABLES
