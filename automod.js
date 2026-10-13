@@ -13,9 +13,7 @@ const path = require("node:path");
 const OWNER_ID = "1486246219243323503";
 
 // الكلمات العادية: اكتب كلماتك داخل القائمة
-const NORMAL_WORDS = [
-  // "اكتب الكلمة هنا",
-];
+const NORMAL_WORDS = [كسمك]؛
 
 // الكلمات الخاصة: اكتب كلماتك داخل القائمة
 const SPECIAL_WORDS = [
