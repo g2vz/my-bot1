@@ -128,6 +128,7 @@ client.on("interactionCreate", async interaction => {
 
             if (handled) {
                 return;
+                if (await roleCommand.handleInteraction(interaction)) return;
             }
         }
 
