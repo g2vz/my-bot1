@@ -14,6 +14,7 @@ require("dotenv").config();
 const talk = require("./talk");
 const mamboSleep = require("./mambo-sleep");
 const automod = require("./automod");
+const role = require ("./role");
 
 // ======================================================
 // CLIENT
