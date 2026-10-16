@@ -14,7 +14,7 @@ require("dotenv").config();
 const talk = require("./talk");
 const mamboSleep = require("./mambo-sleep");
 const automod = require("./automod");
-const role = require ("./role");
+const roleCommand = require("./role");
 
 // ======================================================
 // CLIENT
@@ -45,6 +45,7 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const commandGroups = [
     ...(talk.commands || []),
     ...(mamboSleep.commands || []),
+    ...(roleCommand.commands || []),
 ];
 
 // Prevent duplicate slash command names
