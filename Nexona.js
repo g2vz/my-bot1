@@ -127,7 +127,6 @@ client.on("interactionCreate", async interaction => {
                 await mamboSleep.handleInteraction(interaction);
 
             if (handled) {
-                return;
                 if (await roleCommand.handleInteraction(interaction)) return;
             }
         }
