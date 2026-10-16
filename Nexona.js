@@ -50,7 +50,7 @@ const allCommands = commandGroups.filter(command => {
     return true;
 });
 
-client.once("ready", async () => {
+client.once("clientReady", async () => {
     console.log(`Mambo is online as ${client.user.tag}`);
 
     try {
