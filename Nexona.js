@@ -1,3 +1,4 @@
+
 const {
     Client,
     GatewayIntentBits,
@@ -7,18 +8,18 @@ const {
 
 require("dotenv").config();
 
-// ======================================================
-// COMMAND MODULES
-// ======================================================
-
 const talk = require("./talk");
 const mamboSleep = require("./mambo-sleep");
 const automod = require("./automod");
 const roleCommand = require("./role");
 
-// ======================================================
-// CLIENT
-// ======================================================
+const TOKEN = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+
+if (!TOKEN || !CLIENT_ID) {
+    console.error("DISCORD_TOKEN or CLIENT_ID is missing.");
+    process.exit(1);
+}
 
 const client = new Client({
     intents: [
@@ -29,38 +30,19 @@ const client = new Client({
         GatewayIntentBits.GuildVoiceStates
     ]
 });
+
 client.on("messageCreate", automod.handleMessage);
-
-// ======================================================
-// ENVIRONMENT VARIABLES
-// ======================================================
-
-const TOKEN = process.env.DISCORD_TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
-
-// ======================================================
-// COMMAND GROUPS
-// ======================================================
 
 const commandGroups = [
     ...(talk.commands || []),
     ...(mamboSleep.commands || []),
-    ...(roleCommand.commands || []),
+    ...(roleCommand.commands || [])
 ];
 
-// Prevent duplicate slash command names
 const seenCommandNames = new Set();
 
 const allCommands = commandGroups.filter(command => {
-    if (!command || !command.name) {
-        return false;
-    }
-
-    if (seenCommandNames.has(command.name)) {
-        console.warn(
-            `Duplicate command ignored: /${command.name}`
-        );
-
+    if (!command?.name || seenCommandNames.has(command.name)) {
         return false;
     }
 
@@ -68,165 +50,66 @@ const allCommands = commandGroups.filter(command => {
     return true;
 });
 
-// ======================================================
-// READY
-// ======================================================
-
 client.once("ready", async () => {
-    console.log("--------------------------------");
-    console.log("Nexona is online!");
-    console.log(`Logged in as: ${client.user.tag}`);
-    console.log(`Bot ID: ${client.user.id}`);
-    console.log("--------------------------------");
+    console.log(`Mambo is online as ${client.user.tag}`);
 
     try {
-        const rest = new REST({
-            version: "10"
-        }).setToken(TOKEN);
-
-        const commandData = allCommands.map(
-            command => command.toJSON()
-        );
+        const rest = new REST({ version: "10" }).setToken(TOKEN);
 
         await rest.put(
             Routes.applicationCommands(CLIENT_ID),
             {
-                body: commandData
+                body: allCommands.map(command =>
+                    typeof command.toJSON === "function"
+                        ? command.toJSON()
+                        : command
+                )
             }
         );
 
         console.log(
-            `Registered ${commandData.length} slash commands.`
+            `Registered ${allCommands.length} slash commands.`
         );
-
-        for (const command of allCommands) {
-            console.log(`  /${command.name}`);
-        }
-
     } catch (error) {
-        console.error(
-            "Failed to register slash commands:",
-            error
-        );
+        console.error("Command registration failed:", error);
     }
 });
 
-// ======================================================
-// INTERACTIONS
-// ======================================================
-
 client.on("interactionCreate", async interaction => {
     try {
-        // --------------------------------------------------
-        // MAMBO SLEEP
-        // Handles slash commands, channel selection and buttons
-        // --------------------------------------------------
+        if (await roleCommand.handleInteraction(interaction)) return;
 
-        if (mamboSleep.handleInteraction) {
-            const handled =
-                await mamboSleep.handleInteraction(interaction);
-
-            if (handled) {
-                if (await roleCommand.handleInteraction(interaction)) return;
-            }
-        }
-
-        // --------------------------------------------------
-        // TALK COMMANDS
-        // --------------------------------------------------
+        if (await mamboSleep.handleInteraction(interaction)) return;
 
         if (interaction.isChatInputCommand()) {
-            if (talk.handleInteraction) {
-                await talk.handleInteraction(
-                    interaction,
-                    client
-                );
-            }
-
-            return;
+            if (await talk.handleInteraction(interaction, client)) return;
         }
-
     } catch (error) {
-        console.error(
-            "Interaction error:",
-            error
-        );
+        console.error("Interaction error:", error);
 
-        const errorMessage =
-            "Something went wrong while executing this interaction.";
+        const message = "صار خطأ أثناء تنفيذ الأمر.";
 
         try {
             if (interaction.replied || interaction.deferred) {
                 await interaction.followUp({
-                    content: errorMessage,
+                    content: message,
                     ephemeral: true
                 });
             } else {
                 await interaction.reply({
-                    content: errorMessage,
+                    content: message,
                     ephemeral: true
                 });
             }
         } catch (replyError) {
-            console.error(
-                "Failed to send error response:",
-                replyError
-            );
+            console.error("Failed to send error response:", replyError);
         }
     }
 });
 
-// ======================================================
-// DISCORD CLIENT ERRORS
-// ======================================================
+client.on("error", console.error);
 
-client.on("error", error => {
-    console.error(
-        "Discord Client Error:",
-        error
-    );
-});
-
-// ======================================================
-// PROCESS ERRORS
-// ======================================================
-
-process.on("unhandledRejection", error => {
-    console.error(
-        "Unhandled Promise Rejection:",
-        error
-    );
-});
-
-process.on("uncaughtException", error => {
-    console.error(
-        "Uncaught Exception:",
-        error
-    );
-});
-
-// ======================================================
-// LOGIN VALIDATION
-// ======================================================
-
-if (!TOKEN) {
-    console.error(
-        "DISCORD_TOKEN is missing."
-    );
-
-    process.exit(1);
-}
-
-if (!CLIENT_ID) {
-    console.error(
-        "CLIENT_ID is missing."
-    );
-
-    process.exit(1);
-}
-
-// ======================================================
-// LOGIN
-// ======================================================
+process.on("unhandledRejection", console.error);
+process.on("uncaughtException", console.error);
 
 client.login(TOKEN);
