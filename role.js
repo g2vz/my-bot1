@@ -9,17 +9,17 @@ const BOT_OWNER_ID = "1486246219243323503";
 const commands = [
   new SlashCommandBuilder()
     .setName("role")
-    .setDescription("إعطاء رتبة لعضو")
+    .setDescription("عط عبد رتبة")
     .addUserOption(option =>
       option
         .setName("member")
-        .setDescription("العضو الذي تريد إعطاءه الرتبة")
+        .setDescription("مين تبي تعطية رتبه؟")
         .setRequired(true)
     )
     .addRoleOption(option =>
       option
         .setName("role")
-        .setDescription("الرتبة التي تريد إعطاءها")
+        .setDescriptio("اي رتبة تبي تعطيه حضرة جنابك")
         .setRequired(true)
     )
     .toJSON(),
