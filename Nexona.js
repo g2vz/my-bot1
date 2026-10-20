@@ -12,6 +12,7 @@ const talk = require("./talk");
 const mamboSleep = require("./mambo-sleep");
 const automod = require("./automod");
 const roleCommand = require("./role");
+const scan = require("./scan");
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
