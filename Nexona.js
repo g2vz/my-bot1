@@ -40,6 +40,10 @@ const commandGroups = [
     ...(roleCommand.commands || []),
     ...(scan.commands || [])
 ];
+console.log("Scan module:", {
+    commands: scan.commands?.map(command => command.name),
+    handler: typeof scan.handleInteraction
+});
 
 const seenCommandNames = new Set();
 
