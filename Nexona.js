@@ -37,7 +37,8 @@ client.on("messageCreate", automod.handleMessage);
 const commandGroups = [
     ...(talk.commands || []),
     ...(mamboSleep.commands || []),
-    ...(roleCommand.commands || [])
+    ...(roleCommand.commands || []),
+    ...(scan.commands || [])
 ];
 
 const seenCommandNames = new Set();
@@ -51,7 +52,7 @@ const allCommands = commandGroups.filter(command => {
     return true;
 });
 
-client.once("clientReady", async () => {
+client.once("ready", async () => {
     console.log(`Mambo is online as ${client.user.tag}`);
 
     try {
@@ -81,6 +82,8 @@ client.on("interactionCreate", async interaction => {
         if (await roleCommand.handleInteraction(interaction)) return;
 
         if (await mamboSleep.handleInteraction(interaction)) return;
+
+        if (await scan.handleInteraction(interaction)) return;
 
         if (interaction.isChatInputCommand()) {
             if (await talk.handleInteraction(interaction, client)) return;
