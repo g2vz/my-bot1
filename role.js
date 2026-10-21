@@ -96,7 +96,7 @@ async function handleInteraction(interaction) {
 
         if (target.roles.cache.has(role.id)) {
             await interaction.editReply(
-                `${target} عنده الرتبة ${role} بالفعل.`
+                `${target} عنده الرتبة ${role} اولردي.`
             );
             return true;
         }
