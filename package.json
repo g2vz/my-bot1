@@ -1,10 +1,10 @@
 {
   "name": "my-bot1",
   "version": "1.0.0",
-  "description": "Nexona Discord Bot",
-  "main": "Nexona.js",
+  "description": "Viva Discord Bot",
+  "main": "main.js",
   "scripts": {
-    "start": "node Nexona.js"
+    "start": "node main.js"
   },
   "dependencies": {
     "@discordjs/voice": "^0.16.0",
